@@ -12,8 +12,6 @@ export class NOAAWeatherAccessory {
     const { Service } = this.platform.api.hap;
     this.temperatureService = this.accessory.addService(Service.TemperatureSensor, 'Temperature');
     this.humidityService = this.accessory.addService(Service.HumiditySensor, 'Humidity');
-
-    this.platform.api.on('updatePlatformAccessories', () => this.updateValues());
   }
 
   updateValues() {
@@ -23,7 +21,13 @@ export class NOAAWeatherAccessory {
     const temp = weather.temperature.value;
     const humidity = weather.relativeHumidity.value;
 
-    this.temperatureService.updateCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature, temp);
-    this.humidityService.updateCharacteristic(this.platform.api.hap.Characteristic.CurrentRelativeHumidity, humidity);
+    this.temperatureService.updateCharacteristic(
+      this.platform.api.hap.Characteristic.CurrentTemperature,
+      temp
+    );
+    this.humidityService.updateCharacteristic(
+      this.platform.api.hap.Characteristic.CurrentRelativeHumidity,
+      humidity
+    );
   }
 }
