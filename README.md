@@ -8,7 +8,7 @@ Fetches **temperature** and **humidity** from NOAA's National Weather Service AP
 
 ### 1. No API Key Needed
 
-This plugin uses NOAA's public API. It is **free** and requires **no registration**. USA weather reports only.
+This plugin uses NOAA's public API. It is **free** and requires **no registration**. USA weather reports only!
 
 ---
 
