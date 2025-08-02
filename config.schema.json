@@ -1,0 +1,12 @@
+{
+  "pluginAlias": "NOAAWeather",
+  "pluginType": "platform",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "latitude": { "title": "Latitude", "type": "number", "required": true },
+      "longitude": { "title": "Longitude", "type": "number", "required": true },
+      "pollInterval": { "title": "Polling Interval (minutes)", "type": "integer", "default": 15 }
+    }
+  }
+}

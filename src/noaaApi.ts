@@ -1,0 +1,30 @@
+import axios from 'axios';
+
+export class NOAAApi {
+  private stationUrl: string | null = null;
+
+  constructor(private config) {}
+
+  private async findNearestStation() {
+    if (this.stationUrl) return this.stationUrl;
+
+    const url = `https://api.weather.gov/points/${this.config.latitude},${this.config.longitude}`;
+    const response = await axios.get(url);
+    const stationsEndpoint = response.data.properties.observationStations;
+
+    const stationsResp = await axios.get(stationsEndpoint);
+    this.stationUrl = stationsResp.data.features[0].id;
+    return this.stationUrl;
+  }
+
+  async getCurrentWeather() {
+    const station = await this.findNearestStation();
+    const obsResp = await axios.get(`${station}/observations/latest`);
+    const obs = obsResp.data.properties;
+
+    return {
+      temperature: obs.temperature.value, // Celsius
+      humidity: obs.relativeHumidity.value // Percent
+    };
+  }
+}
