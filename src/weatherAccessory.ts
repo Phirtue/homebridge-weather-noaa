@@ -36,8 +36,14 @@ export class NOAAWeatherAccessory {
       return;
     }
 
-    const tempC = weather.temperature?.value ?? weather.temp?.value ?? 0;
-    const humidity = weather.relativeHumidity?.value ?? weather.humidity?.value ?? 0;
+    // ✅ Use safe null checks
+    const tempC = (weather.temperature !== null && weather.temperature !== undefined)
+      ? weather.temperature
+      : 0;
+
+    const humidity = (weather.humidity !== null && weather.humidity !== undefined)
+      ? weather.humidity
+      : 0;
 
     this.platform.log.debug(`Updating Temp: ${tempC}°C, Humidity: ${humidity}%`);
 
