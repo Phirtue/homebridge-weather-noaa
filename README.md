@@ -1,6 +1,7 @@
 # Homebridge NOAA Weather Plugin
 
-Fetches **temperature** and **humidity** from NOAA's National Weather Service API and exposes them to HomeKit as sensors.
+Fetches **temperature** and **humidity** from NOAA's National Weather Service API and exposes them to HomeKit as sensors. 
+Automatically detects the closest NOAA station or allows you to manually specify one.
 
 ---
 
