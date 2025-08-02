@@ -27,6 +27,7 @@ sudo npm install -g homebridge-weather-noaa
 - Enter:
   - Latitude / Longitude (decimal format)
   - Polling interval (minutes)
+  - NOAA Station ID (optional, manually specified instead of auto detected)
 
 ---
 
