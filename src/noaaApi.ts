@@ -23,8 +23,10 @@ export class NOAAApi {
     const stationsEndpoint = response.data.properties.observationStations;
 
     const stationsResp = await axios.get(stationsEndpoint);
-    this.stationUrl = stationsResp.data.features[0].id;
-    return this.stationUrl;
+    const id: string = stationsResp.data.features[0].id;
+
+    this.stationUrl = id;
+    return id;
   }
 
   async getCurrentWeather(): Promise<WeatherData> {

@@ -45,14 +45,3 @@ Two accessories appear:
 - HomeKit uses Celsius internally but will automatically display Fahrenheit based on your region.
 
 ---
-
-### Publishing Workflow
-
-This project uses **semantic-release** for automatic versioning and publishing.
-
-- Commit messages must follow **Conventional Commits** (e.g., `feat: add feature`, `fix: bug fix`).
-- On each push to `main`, GitHub Actions:
-  - Determines new version (major/minor/patch)
-  - Publishes to npm
-  - Creates GitHub release
-  - Updates CHANGELOG.md
