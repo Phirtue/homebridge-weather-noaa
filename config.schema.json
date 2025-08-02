@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "NOAAWeather",
+  "pluginAlias": "WeatherNOAA",
   "pluginType": "platform",
   "schema": {
     "type": "object",
