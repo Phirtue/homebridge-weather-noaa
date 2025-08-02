@@ -9,8 +9,9 @@
   },
   "keywords": [
     "homebridge-plugin",
-    "homebridge",
+    "homebridge-weather-noaa",
     "weather",
+    "weather-sensor",
     "noaa"
   ],
   "author": "Phirtue",
