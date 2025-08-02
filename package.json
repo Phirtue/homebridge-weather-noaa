@@ -10,7 +10,7 @@
   "keywords": ["homebridge-plugin", "noaa", "weather"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_GITHUB_USERNAME/homebridge-weather-noaa.git"
+    "url": "https://github.com/Phirtue/homebridge-weather-noaa.git"
   },
   "engines": {
     "homebridge": ">=1.6.0",
