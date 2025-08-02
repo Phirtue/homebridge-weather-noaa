@@ -16,7 +16,7 @@ export class NOAAApi {
   constructor(private config: NOAAConfig) {}
 
   private async findNearestStation(): Promise<string> {
-    if (this.stationUrl) return this.stationUrl;
+    if (this.stationUrl !== null) return this.stationUrl;
 
     const url = `https://api.weather.gov/points/${this.config.latitude},${this.config.longitude}`;
     const response = await axios.get(url);
