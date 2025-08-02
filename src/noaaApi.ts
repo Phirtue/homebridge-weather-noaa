@@ -1,11 +1,21 @@
 import axios from 'axios';
 
+export interface NOAAConfig {
+  latitude: number;
+  longitude: number;
+}
+
+export interface WeatherData {
+  temperature: number;
+  humidity: number;
+}
+
 export class NOAAApi {
   private stationUrl: string | null = null;
 
-  constructor(private config) {}
+  constructor(private config: NOAAConfig) {}
 
-  private async findNearestStation() {
+  private async findNearestStation(): Promise<string> {
     if (this.stationUrl) return this.stationUrl;
 
     const url = `https://api.weather.gov/points/${this.config.latitude},${this.config.longitude}`;
@@ -17,7 +27,7 @@ export class NOAAApi {
     return this.stationUrl;
   }
 
-  async getCurrentWeather() {
+  async getCurrentWeather(): Promise<WeatherData> {
     const station = await this.findNearestStation();
     const obsResp = await axios.get(`${station}/observations/latest`);
     const obs = obsResp.data.properties;

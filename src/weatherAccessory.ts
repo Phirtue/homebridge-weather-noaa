@@ -1,5 +1,6 @@
 import { Service, PlatformAccessory } from 'homebridge';
 import { NOAAWeatherPlatform } from './platform';
+import { WeatherData } from './noaaApi';
 
 export class WeatherAccessory {
   private temperatureService: Service;
@@ -18,7 +19,7 @@ export class WeatherAccessory {
     this.humidityService.setCharacteristic(this.platform.Characteristic.Name, 'Outdoor Humidity');
   }
 
-  updateData(weatherData) {
+  updateData(weatherData: WeatherData): void {
     this.temperatureService.updateCharacteristic(
       this.platform.Characteristic.CurrentTemperature,
       weatherData.temperature,

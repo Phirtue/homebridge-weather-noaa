@@ -1,13 +1,13 @@
 import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
 import { WeatherAccessory } from './weatherAccessory';
-import { NOAAApi } from './noaaApi';
+import { NOAAApi, WeatherData } from './noaaApi';
 
 export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service = this.api.hap.Service;
   public readonly Characteristic: typeof Characteristic = this.api.hap.Characteristic;
   private accessories: PlatformAccessory[] = [];
   private apiClient: NOAAApi;
-  private weatherAccessory: WeatherAccessory;
+  private weatherAccessory!: WeatherAccessory;
   private lastTemp = 0;
 
   constructor(
@@ -15,15 +15,18 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
-    this.apiClient = new NOAAApi(config);
+    this.apiClient = new NOAAApi({
+      latitude: config.latitude as number,
+      longitude: config.longitude as number
+    });
     this.api.on('didFinishLaunching', () => this.initialize());
   }
 
-  configureAccessory(accessory: PlatformAccessory) {
+  configureAccessory(accessory: PlatformAccessory): void {
     this.accessories.push(accessory);
   }
 
-  private async initialize() {
+  private async initialize(): Promise<void> {
     const uuid = this.api.hap.uuid.generate('homebridge-noaa-weather-accessory');
     let accessory = this.accessories.find(acc => acc.UUID === uuid);
 
@@ -36,13 +39,13 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     this.startPolling();
   }
 
-  private async startPolling() {
+  private async startPolling(): Promise<void> {
     await this.pollWeather();
   }
 
-  private async pollWeather() {
+  private async pollWeather(): Promise<void> {
     try {
-      const data = await this.apiClient.getCurrentWeather();
+      const data: WeatherData = await this.apiClient.getCurrentWeather();
       this.weatherAccessory.updateData(data);
 
       const diff = Math.abs(this.lastTemp - data.temperature);
