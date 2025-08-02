@@ -1,27 +1,39 @@
 {
   "name": "homebridge-weather-noaa",
-  "version": "1.0.1",
-  "description": "Homebridge plugin to fetch temperature and humidity using NOAA's National Weather Service API",
+  "version": "1.0.2",
+  "description": "Homebridge plugin providing NOAA weather data as sensors.",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "prepare": "npm run build"
   },
-  "keywords": ["homebridge-plugin", "noaa", "weather"],
+  "keywords": [
+    "homebridge-plugin",
+    "homebridge",
+    "weather",
+    "noaa"
+  ],
+  "author": "Phirtue",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Phirtue/homebridge-weather-noaa.git"
   },
+  "bugs": {
+    "url": "https://github.com/Phirtue/homebridge-weather-noaa/issues"
+  },
+  "files": [
+    "dist",
+    "config.schema.json",
+    "README.md"
+  ],
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "@types/node": "^22.0.0",
+    "homebridge": "^1.7.0"
+  },
   "engines": {
     "homebridge": ">=1.6.0",
     "node": ">=16.0.0"
-  },
-  "dependencies": {
-    "axios": "^1.7.0",
-    "homebridge": "^1.6.0"
-  },
-  "devDependencies": {
-    "typescript": "^5.3.0",
-    "eslint": "^8.56.0",
-    "@types/node": "^20.0.0"
   }
 }
