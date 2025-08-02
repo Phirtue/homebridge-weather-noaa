@@ -13,7 +13,7 @@ export class NOAAWeatherAccessory {
     this.temperatureService = this.accessory.addService(Service.TemperatureSensor, 'Temperature');
     this.humidityService = this.accessory.addService(Service.HumiditySensor, 'Humidity');
 
-    this.updateValues();
+    this.platform.api.on('updatePlatformAccessories', () => this.updateValues());
   }
 
   updateValues() {

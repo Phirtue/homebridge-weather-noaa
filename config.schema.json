@@ -10,9 +10,14 @@
         "type": "string",
         "default": "NOAA Weather"
       },
-      "station": {
-        "title": "NOAA Station ID",
-        "type": "string",
+      "latitude": {
+        "title": "Latitude",
+        "type": "number",
+        "required": true
+      },
+      "longitude": {
+        "title": "Longitude",
+        "type": "number",
         "required": true
       },
       "refreshInterval": {
