@@ -4,14 +4,12 @@
   "description": "Homebridge plugin to fetch temperature and humidity using NOAA's National Weather Service API",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
-    "lint": "eslint .",
-    "prepublishOnly": "npm run build"
+    "build": "tsc"
   },
   "keywords": ["homebridge-plugin", "noaa", "weather"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Phirtue/homebridge-weather-noaa.git"
+    "url": "git+https://github.com/Phirtue/homebridge-weather-noaa.git"
   },
   "engines": {
     "homebridge": ">=1.6.0",
