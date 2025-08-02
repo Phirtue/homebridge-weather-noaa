@@ -20,6 +20,12 @@
         "type": "number",
         "required": true
       },
+      "stationId": {
+        "title": "NOAA Station ID (Optional)",
+        "description": "Enter a specific NOAA station ID to override auto-selection (e.g. KSEA).",
+        "type": "string",
+        "required": false
+      },
       "refreshInterval": {
         "title": "Refresh Interval (minutes)",
         "type": "integer",
