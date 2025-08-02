@@ -36,16 +36,11 @@ export class NOAAWeatherAccessory {
       return;
     }
 
-    // ✅ Use safe null checks
-    const tempC = (weather.temperature !== null && weather.temperature !== undefined)
-      ? weather.temperature
-      : 0;
+    // ✅ Explicitly parse numbers
+    const tempC = Number(weather.temperature ?? 0);
+    const humidity = Number(weather.humidity ?? 0);
 
-    const humidity = (weather.humidity !== null && weather.humidity !== undefined)
-      ? weather.humidity
-      : 0;
-
-    this.platform.log.debug(`Updating Temp: ${tempC}°C, Humidity: ${humidity}%`);
+    this.platform.log.warn(`Updating NOAA → Temp: ${tempC}°C, Humidity: ${humidity}%`);
 
     this.temperatureService.updateCharacteristic(
       this.platform.api.hap.Characteristic.CurrentTemperature,
