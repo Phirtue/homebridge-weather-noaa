@@ -1,10 +1,8 @@
-import { API, Logger, PlatformAccessory, PlatformConfig, StaticPlatformPlugin } from 'homebridge';
+import { API, Logger, PlatformAccessory, PlatformConfig, DynamicPlatformPlugin } from 'homebridge';
 import axios from 'axios';
 import { NOAAWeatherAccessory } from './weatherAccessory';
 
-export class NOAAWeatherPlatform implements StaticPlatformPlugin {
-  private accessories: PlatformAccessory[] = [];
-
+export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   constructor(
     public readonly log: Logger,
     public readonly config: PlatformConfig,
@@ -38,7 +36,7 @@ export class NOAAWeatherPlatform implements StaticPlatformPlugin {
     }
 
     const accessory = new this.api.platformAccessory('NOAA Weather', 'noaa-weather-uuid');
-    new NOAAWeatherAccessory(this, accessory);
+    const weatherAccessory = new NOAAWeatherAccessory(this, accessory);
     this.api.publishExternalAccessories('NOAAWeather', [accessory]);
 
     const fetchWeather = async () => {
@@ -47,7 +45,7 @@ export class NOAAWeatherPlatform implements StaticPlatformPlugin {
           `https://api.weather.gov/stations/${stationId}/observations/latest`
         );
         accessory.context.weather = data.data.properties;
-        this.api.updatePlatformAccessories([accessory]);
+        weatherAccessory.updateValues();
       } catch (e) {
         this.log.error('Failed to fetch NOAA data', e);
       }
