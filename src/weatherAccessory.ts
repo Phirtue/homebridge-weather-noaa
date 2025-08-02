@@ -1,8 +1,7 @@
 import { Service, PlatformAccessory } from 'homebridge';
 import { NOAAWeatherPlatform } from './platform';
-import { WeatherData } from './noaaApi';
 
-export class WeatherAccessory {
+export class NOAAWeatherAccessory {
   private temperatureService: Service;
   private humidityService: Service;
 
@@ -10,23 +9,21 @@ export class WeatherAccessory {
     private readonly platform: NOAAWeatherPlatform,
     private readonly accessory: PlatformAccessory,
   ) {
-    this.temperatureService = accessory.getService(this.platform.Service.TemperatureSensor)
-      || accessory.addService(this.platform.Service.TemperatureSensor);
-    this.humidityService = accessory.getService(this.platform.Service.HumiditySensor)
-      || accessory.addService(this.platform.Service.HumiditySensor);
+    const { Service } = this.platform.api.hap;
+    this.temperatureService = this.accessory.addService(Service.TemperatureSensor, 'Temperature');
+    this.humidityService = this.accessory.addService(Service.HumiditySensor, 'Humidity');
 
-    this.temperatureService.setCharacteristic(this.platform.Characteristic.Name, 'Outdoor Temperature');
-    this.humidityService.setCharacteristic(this.platform.Characteristic.Name, 'Outdoor Humidity');
+    this.updateValues();
   }
 
-  updateData(weatherData: WeatherData): void {
-    this.temperatureService.updateCharacteristic(
-      this.platform.Characteristic.CurrentTemperature,
-      weatherData.temperature,
-    );
-    this.humidityService.updateCharacteristic(
-      this.platform.Characteristic.CurrentRelativeHumidity,
-      weatherData.humidity,
-    );
+  updateValues() {
+    const weather = this.accessory.context.weather;
+    if (!weather) return;
+
+    const temp = weather.temperature.value;
+    const humidity = weather.relativeHumidity.value;
+
+    this.temperatureService.updateCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature, temp);
+    this.humidityService.updateCharacteristic(this.platform.api.hap.Characteristic.CurrentRelativeHumidity, humidity);
   }
 }
