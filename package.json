@@ -1,6 +1,6 @@
 {
   "name": "homebridge-weather-noaa",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Homebridge plugin to fetch temperature and humidity using NOAA's National Weather Service API",
   "main": "dist/index.js",
   "scripts": {
