@@ -28,7 +28,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   }
 
   /**
-   * Discover devices and create our dynamic accessory
+   * Discover NOAA station and create a dynamic accessory
    */
   async discoverDevices() {
     const latitude = this.config.latitude;
@@ -58,7 +58,10 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       return;
     }
 
-    const accessory = new this.api.platformAccessory('NOAA Weather', 'noaa-weather-uuid');
+    // ✅ FIX: Generate a valid UUID
+    const uuid = this.api.hap.uuid.generate('noaa-weather-unique');
+    const accessory = new this.api.platformAccessory('NOAA Weather', uuid);
+
     const weatherAccessory = new NOAAWeatherAccessory(this, accessory);
     this.api.publishExternalAccessories('NOAAWeather', [accessory]);
 
