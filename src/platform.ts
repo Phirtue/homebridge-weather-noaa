@@ -5,6 +5,7 @@ import axios from 'axios';
 import { NOAAWeatherAccessory } from './weatherAccessory';
 
 export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
+  private axiosInstance;
 
   constructor(
     public readonly log: Logger,
@@ -12,6 +13,16 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     public readonly api: API,
   ) {
     this.log.info('NOAAWeatherPlatform initialized');
+
+    // ✅ NOAA requires a User-Agent with contact info
+    this.axiosInstance = axios.create({
+      headers: {
+        'User-Agent': 'homebridge-weather-noaa (your-email@example.com)',
+        'Accept': 'application/geo+json'
+      },
+      timeout: 10000
+    });
+
     api.on('didFinishLaunching', () => this.discoverDevices());
   }
 
@@ -22,7 +33,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   async discoverDevices() {
     const latitude = this.config.latitude;
     const longitude = this.config.longitude;
-    const refresh = (this.config.refreshInterval || 15) * 60 * 1000;
+    const refresh = (this.config.refreshInterval || 5) * 60 * 1000;
 
     if (!latitude || !longitude) {
       this.log.error('Latitude and Longitude must be configured.');
@@ -31,7 +42,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
     let stationId: string | null = null;
     try {
-      const stations = await axios.get(
+      const stations = await this.axiosInstance.get(
         `https://api.weather.gov/points/${latitude},${longitude}/stations`
       );
       if (stations.data.features?.length > 0) {
@@ -50,16 +61,24 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     const accessory = new this.api.platformAccessory('NOAA Weather', uuid);
     const weatherAccessory = new NOAAWeatherAccessory(this, accessory);
 
-    // ✅ FIX: register internally (no child bridge)
+    // Register internally to avoid separate bridge
     this.api.registerPlatformAccessories('homebridge-weather-noaa', 'NOAAWeather', [accessory]);
 
     const fetchWeather = async () => {
       try {
-        const data = await axios.get(
+        const data = await this.axiosInstance.get(
           `https://api.weather.gov/stations/${stationId}/observations/latest`
         );
-        this.log.debug('NOAA Weather Data:', JSON.stringify(data.data.properties));
-        accessory.context.weather = data.data.properties;
+
+        const properties = data.data.properties;
+        this.log.debug('NOAA Weather Data:', JSON.stringify(properties));
+
+        // ✅ Parse temperature & humidity
+        accessory.context.weather = {
+          temperature: properties.temperature?.value ?? properties.temp?.value ?? null,
+          humidity: properties.relativeHumidity?.value ?? properties.humidity?.value ?? null
+        };
+
         weatherAccessory.updateValues();
       } catch (e) {
         this.log.error('Failed to fetch NOAA data', e);
