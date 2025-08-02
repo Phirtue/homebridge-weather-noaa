@@ -21,12 +21,21 @@ jobs:
       - name: Configure npm auth
         run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
 
-      - name: Install and Build
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Verify build success
         run: |
-          npm ci
-          npm run build
+          if [ ! -d "dist" ] || [ -z "$(ls -A dist)" ]; then
+            echo "Build failed or dist/ is empty. Aborting publish."
+            exit 1
+          fi
 
       - name: Auto bump version and publish
+        if: success()  # ✅ Only run if all previous steps succeed
         run: |
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
