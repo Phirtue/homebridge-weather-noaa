@@ -1,4 +1,4 @@
-name: Publish to npm
+name: Auto Publish to npm
 
 on:
   push:
@@ -7,6 +7,9 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -15,14 +18,20 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org/'
 
-      - name: Configure npm authentication
+      - name: Configure npm auth
         run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install and Build
+        run: |
+          npm ci
+          npm run build
 
-      - name: Build TypeScript
-        run: npm run build
-
-      - name: Publish package
-        run: npm publish --access public
+      - name: Auto bump version and publish
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          npm version patch -m "chore: bump version to %s [skip ci]"
+          git push --follow-tags
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
