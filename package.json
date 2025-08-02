@@ -1,6 +1,5 @@
 {
   "name": "homebridge-weather-noaa",
-  "version": "1.0.0",
   "description": "Homebridge plugin to fetch temperature and humidity using NOAA's National Weather Service API",
   "main": "dist/index.js",
   "scripts": {
@@ -9,6 +8,10 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": ["homebridge-plugin", "noaa", "weather"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_GITHUB_USERNAME/homebridge-weather-noaa.git"
+  },
   "engines": {
     "homebridge": ">=1.6.0",
     "node": ">=16.0.0"
@@ -18,6 +21,26 @@
   },
   "devDependencies": {
     "typescript": "^5.3.0",
-    "eslint": "^8.56.0"
+    "eslint": "^8.56.0",
+    "semantic-release": "^22.0.0",
+    "@semantic-release/git": "^10.0.0",
+    "@semantic-release/github": "^9.0.0",
+    "@semantic-release/changelog": "^6.0.0",
+    "@semantic-release/commit-analyzer": "^11.0.0",
+    "@semantic-release/release-notes-generator": "^12.0.0"
+  },
+  "release": {
+    "branches": ["main"],
+    "plugins": [
+      ["@semantic-release/commit-analyzer", {"preset": "conventionalcommits"}],
+      ["@semantic-release/release-notes-generator", {"preset": "conventionalcommits"}],
+      ["@semantic-release/changelog", {"changelogFile": "CHANGELOG.md"}],
+      ["@semantic-release/npm", {"npmPublish": true}],
+      ["@semantic-release/git", {
+        "assets": ["package.json", "CHANGELOG.md"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]"
+      }],
+      ["@semantic-release/github", {"assets": []}]
+    ]
   }
 }

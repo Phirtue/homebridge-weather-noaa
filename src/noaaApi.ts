@@ -23,8 +23,8 @@ export class NOAAApi {
     const obs = obsResp.data.properties;
 
     return {
-      temperature: obs.temperature.value, // Celsius
-      humidity: obs.relativeHumidity.value // Percent
+      temperature: obs.temperature.value,
+      humidity: obs.relativeHumidity.value
     };
   }
 }
