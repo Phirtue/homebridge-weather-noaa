@@ -1,8 +1,15 @@
-import { API, Logger, PlatformAccessory, PlatformConfig, DynamicPlatformPlugin } from 'homebridge';
+import { 
+  API, 
+  Logger, 
+  PlatformAccessory, 
+  PlatformConfig, 
+  DynamicPlatformPlugin 
+} from 'homebridge';
 import axios from 'axios';
 import { NOAAWeatherAccessory } from './weatherAccessory';
 
 export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
+
   constructor(
     public readonly log: Logger,
     public readonly config: PlatformConfig,
@@ -12,10 +19,26 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     api.on('didFinishLaunching', () => this.discoverDevices());
   }
 
+  /**
+   * Required for DynamicPlatformPlugin
+   * Handles cached accessories restored from disk
+   */
+  configureAccessory(accessory: PlatformAccessory): void {
+    this.log.info('Cached accessory found (not used):', accessory.displayName);
+  }
+
+  /**
+   * Discover devices and create our dynamic accessory
+   */
   async discoverDevices() {
     const latitude = this.config.latitude;
     const longitude = this.config.longitude;
     const refresh = (this.config.refreshInterval || 15) * 60 * 1000;
+
+    if (!latitude || !longitude) {
+      this.log.error('Latitude and Longitude must be configured in plugin settings.');
+      return;
+    }
 
     let stationId: string | null = null;
 
