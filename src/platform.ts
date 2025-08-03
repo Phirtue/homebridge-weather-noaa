@@ -17,7 +17,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     // ✅ NOAA requires a User-Agent with contact info
     this.axiosInstance = axios.create({
       headers: {
-        'User-Agent': 'homebridge-weather-noaa (your-email@example.com)',
+        'User-Agent': 'homebridge-weather-noaa (https://github.com/Phirtue/homebridge-weather-noaa/)',
         'Accept': 'application/geo+json'
       },
       timeout: 10000
