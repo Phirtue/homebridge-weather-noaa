@@ -14,7 +14,7 @@ jobs:
     strategy:
       matrix:
         node-version: [18.x, 20.x, 22.x]
-        homebridge-version: [latest, next]
+        homebridge-version: [latest, beta]
 
     steps:
       - name: Checkout code
@@ -34,7 +34,13 @@ jobs:
           fi
 
       - name: Install Homebridge version ${{ matrix.homebridge-version }}
-        run: npm install --no-save homebridge@${{ matrix.homebridge-version }}
+        run: |
+          if npm view homebridge@${{ matrix.homebridge-version }} version > /dev/null 2>&1; then
+            npm install --no-save homebridge@${{ matrix.homebridge-version }}
+          else
+            echo "⚠️ homebridge@${{ matrix.homebridge-version }} not found, using latest"
+            npm install --no-save homebridge@latest
+          fi
 
       - name: Build TypeScript
         run: npm run build
