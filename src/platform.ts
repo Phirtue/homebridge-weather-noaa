@@ -8,6 +8,7 @@ import { NOAAWeatherAccessory } from './weatherAccessory';
 
 export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   private axiosInstance;
+  private accessories: PlatformAccessory[] = [];
 
   constructor(
     public readonly log: Logger,
@@ -16,7 +17,6 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   ) {
     this.log.info('NOAAWeatherPlatform initialized');
 
-    // ✅ NOAA requires a User-Agent with contact info
     this.axiosInstance = axios.create({
       headers: {
         'User-Agent': 'homebridge-weather-noaa (https://github.com/Phirtue/homebridge-weather-noaa/)',
@@ -30,7 +30,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
-    this.log.info('Cached accessory found (not used):', accessory.displayName);
+    this.log.info('Re-using cached accessory:', accessory.displayName);
+    this.accessories.push(accessory);
   }
 
   private async fetchWithRetry(url: string, maxRetries = 4): Promise<any> {
@@ -69,7 +70,6 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
     let stationId: string | null = this.config.stationId || null;
 
-    // ✅ Check for cached station
     if (!stationId && fs.existsSync(cacheFile)) {
       try {
         const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
@@ -78,7 +78,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
           cache.longitude === longitude &&
           (Date.now() - cache.timestamp) < 30 * 24 * 60 * 60 * 1000
         ) {
-          this.log.info('Using cached NOAA station:', cache.stationId);
+          this.log.info('📦 Using cached NOAA station:', cache.stationId);
           stationId = cache.stationId;
         }
       } catch (e) {
@@ -86,9 +86,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       }
     }
 
-    // ✅ Manual override or fresh fetch
     if (!stationId && !this.config.stationId) {
       try {
+        this.log.info('🔎 Fetching NOAA stations for coordinates:', latitude, longitude);
         const stations = await this.fetchWithRetry(
           `https://api.weather.gov/points/${latitude},${longitude}/stations`
         );
@@ -105,20 +105,16 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
           return;
         }
 
-        // Sort stations by distance ascending
         stationList.sort((a: any, b: any) => a.distance - b.distance);
 
-        // Log sorted stations
-        this.log.warn(
-          'NOAA stations sorted by distance:',
+        this.log.info(
+          '📡 NOAA stations sorted by distance:',
           stationList.map((s: any) => `${s.id} (${s.distance}m)`).join(', ')
         );
 
-        // Pick the nearest station
         stationId = stationList[0].id;
-        this.log.info('Fetched and selected closest NOAA station:', stationId);
+        this.log.info('✅ Selected closest NOAA station:', stationId);
 
-        // ✅ Cache the station
         fs.writeFileSync(cacheFile, JSON.stringify({
           latitude,
           longitude,
@@ -130,35 +126,51 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         return;
       }
     } else if (this.config.stationId) {
-      this.log.info('Using manually configured NOAA station:', this.config.stationId);
+      this.log.info('📍 Using manually configured NOAA station:', this.config.stationId);
       stationId = this.config.stationId;
     }
 
     const uuid = this.api.hap.uuid.generate('noaa-weather-unique');
-    const accessory = new this.api.platformAccessory('NOAA Weather', uuid);
+    let accessory = this.accessories.find(acc => acc.UUID === uuid);
+
+    if (accessory) {
+      this.log.info('Reusing existing accessory for NOAA Weather.');
+    } else {
+      accessory = new this.api.platformAccessory('NOAA Weather', uuid);
+      this.api.registerPlatformAccessories('homebridge-weather-noaa', 'NOAAWeather', [accessory]);
+      this.log.info('Created new accessory for NOAA Weather.');
+    }
+
     const weatherAccessory = new NOAAWeatherAccessory(this, accessory);
 
-    // ✅ Register internally (no child bridge)
-    this.api.registerPlatformAccessories('homebridge-weather-noaa', 'NOAAWeather', [accessory]);
-
     const fetchWeather = async () => {
+      this.log.info('🔄 Starting NOAA weather update...');
       try {
         const data = await this.fetchWithRetry(
           `https://api.weather.gov/stations/${stationId}/observations/latest`
         );
 
         const properties = data.data.properties;
-        this.log.debug('NOAA Weather Data:', JSON.stringify(properties));
+        const timestamp = properties.timestamp;
+        const temperature = properties.temperature?.value;
+        const humidity = properties.relativeHumidity?.value;
+        const tempQC = properties.temperature?.qualityControl;
+        const humidityQC = properties.relativeHumidity?.qualityControl;
+        const elevation = properties.elevation?.value;
+        const weatherConditions = properties.presentWeather?.map((w: any) => w.weather).join(', ') || 'None';
 
-        // ✅ Parse temperature & humidity
-        accessory.context.weather = {
-          temperature: properties.temperature?.value ?? null,
-          humidity: properties.relativeHumidity?.value ?? null
-        };
+        this.log.info(
+          `🌡️ NOAA Data — Timestamp: ${timestamp}, ` +
+          `Temp: ${temperature}°C (QC: ${tempQC}), ` +
+          `Humidity: ${humidity}% (QC: ${humidityQC}), ` +
+          `Elevation: ${elevation}m, ` +
+          `Conditions: ${weatherConditions}`
+        );
 
+        accessory.context.weather = { temperature, humidity };
         weatherAccessory.updateValues();
       } catch (e) {
-        this.log.error('Failed to fetch NOAA data', e);
+        this.log.error('❌ Failed to fetch NOAA data', e);
       }
     };
 
