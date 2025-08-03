@@ -1,4 +1,4 @@
-name: CI Build and Test
+name: CI Build and Runtime Test
 
 on:
   push:
@@ -7,13 +7,14 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
-    name: Node ${{ matrix.node-version }} Build
+  build-test:
+    name: Node ${{ matrix.node-version }} + Homebridge ${{ matrix.homebridge-version }}
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
         node-version: [18.x, 20.x, 22.x]
+        homebridge-version: [latest, next]
 
     steps:
       - name: Checkout code
@@ -32,6 +33,9 @@ jobs:
             npm install
           fi
 
+      - name: Install Homebridge version ${{ matrix.homebridge-version }}
+        run: npm install --no-save homebridge@${{ matrix.homebridge-version }}
+
       - name: Build TypeScript
         run: npm run build
 
@@ -43,3 +47,36 @@ jobs:
             throw new Error('❌ Missing homebridge-plugin keyword');
           }
           console.log('✅ Plugin metadata check passed');"
+
+      - name: Runtime Test (Start Homebridge with Plugin)
+        run: |
+          mkdir -p ./homebridge-test
+          cat > ./homebridge-test/config.json <<EOL
+          {
+            "bridge": {
+              "name": "HomebridgeTest",
+              "username": "0E:22:D3:AE:AC:42",
+              "port": 51826,
+              "pin": "031-45-154"
+            },
+            "platforms": [
+              {
+                "platform": "NOAAWeather",
+                "name": "NOAA Weather",
+                "latitude": 47.91288,
+                "longitude": -122.09818,
+                "refreshInterval": 15
+              }
+            ]
+          }
+          EOL
+          npx homebridge -U ./homebridge-test &
+          PID=$!
+          sleep 10
+          if ps -p $PID > /dev/null; then
+            echo "✅ Homebridge started successfully with plugin"
+            kill $PID
+          else
+            echo "❌ Homebridge failed to start"
+            exit 1
+          fi
