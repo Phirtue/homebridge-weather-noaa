@@ -1,13 +1,19 @@
 {
   "name": "homebridge-weather-noaa",
-  "version": "1.0.8",
+  "version": "1.1.0",
   "description": "Homebridge plugin providing temperature and humidity sensors using NOAA API.",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build"
   },
-  "keywords": ["homebridge-plugin", "weather", "NOAA", "homebridge-weather-noaa"],
+  "keywords": [
+    "homebridge-plugin",
+    "homebridge",
+    "weather",
+    "NOAA",
+    "homebridge-weather-noaa"
+  ],
   "author": "Phirtue",
   "license": "MIT",
   "repository": {
@@ -19,7 +25,7 @@
     "url": "https://github.com/Phirtue/homebridge-weather-noaa/issues"
   },
   "engines": {
-    "homebridge": ">=1.8.0",
+    "homebridge": ">=1.8.0 <3.0.0",
     "node": ">=18.0.0"
   },
   "files": [
@@ -34,5 +40,8 @@
   "devDependencies": {
     "typescript": "^5.4.5",
     "homebridge": "^1.11.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
