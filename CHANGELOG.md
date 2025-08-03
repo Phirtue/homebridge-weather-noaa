@@ -1,47 +1,56 @@
 # Changelog
 
-All notable changes to **homebridge-weather-noaa** will be documented here.
+---
+
+## [1.3.0] - 2025-08-03
+
+### Enhancements
+- Reuses cached accessories to avoid “Cached accessory found (not used)” messages.
+- Ensures only one NOAA Weather accessory is created and reused after Homebridge restarts.
+- Maintains persistent caching of station lookup and last NOAA readings.
+- Forces HomeKit updates every fetch to keep displayed temperature and humidity synchronized.
+
+### Bug Fixes
+- Fixed duplicate accessory registration issues.
+- Improved startup logs and accessory reuse behavior.
 
 ---
 
 ## [1.2.0] - 2025-08-03
 
 ### Enhancements
-- HomeKit now **always displays a valid temperature and humidity reading**, even immediately after Homebridge restarts.
-- Implemented **persistent caching** of the last NOAA reading (`noaa-weather-last.json`) to prevent blank values on startup.
-- Added **real-time characteristic updates** for temperature and humidity on every successful NOAA API fetch.
-- NOAA responses with unchanged data now **log the event** without sending unnecessary updates to HomeKit.
-- NOAA `null` values are handled gracefully, preserving the last known good reading.
-- Improved overall stability and reliability of accessory updates while maintaining fresh, real-time readings.
+- HomeKit always shows a valid temperature and humidity reading, even right after restart.
+- Persistent caching of last NOAA readings (`noaa-weather-last.json`).
+- Real-time characteristic updates for temperature and humidity on each NOAA fetch.
+- NOAA unchanged readings logged without skipping HomeKit updates.
+- Graceful handling of NOAA null values.
 
 ### Bug Fixes
-- Fixed cases where HomeKit could briefly display zero or missing values due to delayed NOAA responses.
-- Made cache writes more robust, ensuring they do not fail silently.
+- Fixed brief zero or missing readings when NOAA API response delayed.
+- Improved robustness of cache writes.
 
 ---
 
 ## [1.1.0] - 2025-08-03
 
 ### Enhancements
-- Added persistent caching of NOAA `/points` station lookups to reduce redundant API calls.
-- Implemented exponential backoff retry logic for transient NOAA API errors (500/502/503/504).
-- Improved NOAA API compliance:
-  - Added `Referer` header
-  - Updated `User-Agent` format to include GitHub repository URL.
-- Allowed manual station ID override while keeping automatic nearest station selection.
-- Updated package metadata with verified plugin fields (`homepage`, `bugs`, `engines`) for compatibility with Homebridge v1 and upcoming v2.
-- Added GitHub Actions workflow to test Node.js 18, 20, and 22 with Homebridge v1 and v2 compatibility.
+- Cached NOAA station lookups for 30 days.
+- Added retry logic with exponential backoff for transient NOAA API errors.
+- Updated headers to NOAA compliance (`Referer` and improved `User-Agent`).
+- Manual station override supported.
+- Metadata improvements for Homebridge verified plugin.
+- Added CI tests for Node.js 18, 20, 22 with Homebridge v1 and v2 compatibility.
 
 ### Bug Fixes
-- Fixed missing Node typings for `fs` and `path` during builds.
-- Improved station selection with distance-based sorting and caching.
-- Ensured cached station reuse to avoid unnecessary NOAA lookups.
+- Fixed missing Node typings.
+- Improved station selection and caching.
+- Reused cached stations for efficiency.
 
 ---
 
 ## [1.0.0] - 2025-08-02
 
 ### Initial Release
-- Basic Homebridge platform plugin providing temperature and humidity sensors using NOAA API.
+- Basic Homebridge platform plugin providing temperature and humidity sensors via NOAA API.
 - Supports automatic station detection and manual configuration.
-- Fetches real-time data from NOAA and displays it in HomeKit.
+- Fetches real-time NOAA observations and displays in HomeKit.
