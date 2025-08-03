@@ -42,7 +42,7 @@ Two accessories appear:
 ## Notes
 
 - Data is fetched from the nearest NOAA observation station.
-- Observations update every ~10–15 minutes.
+- Observations update every ~5–15 minutes.
 - Adaptive polling reduces API calls if weather is stable.
 - HomeKit uses Celsius internally but will automatically display Fahrenheit based on your region.
 
