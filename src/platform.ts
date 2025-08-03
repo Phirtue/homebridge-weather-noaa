@@ -2,6 +2,8 @@ import {
   API, Logger, PlatformAccessory, PlatformConfig, DynamicPlatformPlugin 
 } from 'homebridge';
 import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
 import { NOAAWeatherAccessory } from './weatherAccessory';
 
 export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
@@ -18,7 +20,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     this.axiosInstance = axios.create({
       headers: {
         'User-Agent': 'homebridge-weather-noaa (https://github.com/Phirtue/homebridge-weather-noaa/)',
-        'Accept': 'application/geo+json'
+        'Accept': 'application/geo+json',
+        'Referer': 'https://github.com/Phirtue/homebridge-weather-noaa'
       },
       timeout: 10000
     });
@@ -30,25 +33,63 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     this.log.info('Cached accessory found (not used):', accessory.displayName);
   }
 
+  private async fetchWithRetry(url: string, maxRetries = 4): Promise<any> {
+    let attempt = 0;
+    let delay = 1000;
+
+    while (attempt < maxRetries) {
+      try {
+        const response = await this.axiosInstance.get(url);
+        return response;
+      } catch (error: any) {
+        const status = error.response?.status || 'NO_RESPONSE';
+        if ([500, 502, 503, 504].includes(status) || status === 'NO_RESPONSE') {
+          this.log.warn(`Request failed (status: ${status}). Retrying in ${delay / 1000}s...`);
+          await new Promise(res => setTimeout(res, delay));
+          delay *= 2;
+          attempt++;
+        } else {
+          throw error;
+        }
+      }
+    }
+    throw new Error(`Failed after ${maxRetries} attempts for URL: ${url}`);
+  }
+
   async discoverDevices() {
     const latitude = this.config.latitude;
     const longitude = this.config.longitude;
     const refresh = (this.config.refreshInterval || 5) * 60 * 1000;
+    const cacheFile = path.join(this.api.user.persistPath(), 'noaa-points-cache.json');
 
     if (!latitude || !longitude) {
       this.log.error('Latitude and Longitude must be configured.');
       return;
     }
 
-    let stationId: string | null = null;
+    let stationId: string | null = this.config.stationId || null;
 
-    // ✅ Allow manual override of station ID
-    if (this.config.stationId) {
-      this.log.info('Using manually configured NOAA station:', this.config.stationId);
-      stationId = this.config.stationId;
-    } else {
+    // ✅ Check for cached station
+    if (!stationId && fs.existsSync(cacheFile)) {
       try {
-        const stations = await this.axiosInstance.get(
+        const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+        if (
+          cache.latitude === latitude &&
+          cache.longitude === longitude &&
+          (Date.now() - cache.timestamp) < 30 * 24 * 60 * 60 * 1000
+        ) {
+          this.log.info('Using cached NOAA station:', cache.stationId);
+          stationId = cache.stationId;
+        }
+      } catch (e) {
+        this.log.warn('Failed to read cache:', e);
+      }
+    }
+
+    // ✅ Manual override or fresh fetch
+    if (!stationId && !this.config.stationId) {
+      try {
+        const stations = await this.fetchWithRetry(
           `https://api.weather.gov/points/${latitude},${longitude}/stations`
         );
 
@@ -75,12 +116,22 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
         // Pick the nearest station
         stationId = stationList[0].id;
-        this.log.info('Using closest NOAA station:', stationId);
+        this.log.info('Fetched and selected closest NOAA station:', stationId);
 
+        // ✅ Cache the station
+        fs.writeFileSync(cacheFile, JSON.stringify({
+          latitude,
+          longitude,
+          stationId,
+          timestamp: Date.now()
+        }, null, 2));
       } catch (error) {
         this.log.error('Failed to fetch NOAA stations', error);
         return;
       }
+    } else if (this.config.stationId) {
+      this.log.info('Using manually configured NOAA station:', this.config.stationId);
+      stationId = this.config.stationId;
     }
 
     const uuid = this.api.hap.uuid.generate('noaa-weather-unique');
@@ -92,7 +143,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
     const fetchWeather = async () => {
       try {
-        const data = await this.axiosInstance.get(
+        const data = await this.fetchWithRetry(
           `https://api.weather.gov/stations/${stationId}/observations/latest`
         );
 
