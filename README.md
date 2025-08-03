@@ -47,3 +47,11 @@ Two accessories appear:
 - HomeKit uses Celsius internally but will automatically display Fahrenheit based on your region.
 
 ---
+
+## Build & Compatibility Status
+
+[![CI Build](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/ci.yml/badge.svg)](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/ci.yml)
+
+![Node.js](https://img.shields.io/badge/node-18%20|%2020%20|%2022-green)
+![Homebridge](https://img.shields.io/badge/homebridge-v1%20|%20v2-blue)
+[![npm version](https://img.shields.io/npm/v/homebridge-weather-noaa.svg)](https://www.npmjs.com/package/homebridge-weather-noaa)
