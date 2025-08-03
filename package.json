@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "lint": "eslint src/**/*.ts"
   },
   "keywords": [
     "homebridge-plugin",
@@ -39,7 +40,8 @@
   },
   "devDependencies": {
     "typescript": "^5.4.5",
-    "homebridge": "^1.11.0"
+    "homebridge": "^1.11.0",
+    "@types/node": "^20.11.30"
   },
   "publishConfig": {
     "access": "public"
