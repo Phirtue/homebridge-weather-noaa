@@ -2,6 +2,31 @@
 
 ---
 
+## [1.4.0] - 2025-08-04
+
+### Enhancements
+- Added detailed metrics tracking:
+  - API request failures
+  - Retry attempts
+  - Station cache resets
+  - Cache write errors
+  - Characteristic update errors
+  - HomeKit service recovery attempts
+- Implemented hourly and shutdown metrics logging for easier troubleshooting.
+- All logs now display timestamps in the local timezone of the Homebridge device.
+- Improved logging consistency across both platform and accessory code.
+- Explicitly marked as **Homebridge v2 compatible** ✅
+- Added marketing tagline to highlight NOAA accuracy and v2 readiness.
+
+### Bug Fixes
+- Fixed potential stale data issues by ensuring forced updates to HomeKit.
+- Improved automatic recovery from:
+  - Corrupted cache files
+  - Missing HomeKit services
+- Prevents plugin from throwing unhandled exceptions that could crash Homebridge.
+
+---
+
 ## [1.3.0] - 2025-08-03
 
 ### Enhancements
