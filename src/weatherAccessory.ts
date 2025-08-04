@@ -42,11 +42,11 @@ export class NOAAWeatherAccessory {
 
       this.temperatureService =
         accessory.getService(this.platform.api.hap.Service.TemperatureSensor) ||
-        accessory.addService(this.platform.api.hap.Service.TemperatureSensor);
+        accessory.addService(this.platform.api.hap.Service.TemperatureSensor, 'NOAA Temperature');
 
       this.humidityService =
         accessory.getService(this.platform.api.hap.Service.HumiditySensor) ||
-        accessory.addService(this.platform.api.hap.Service.HumiditySensor);
+        accessory.addService(this.platform.api.hap.Service.HumiditySensor, 'NOAA Humidity');
 
       this.safeUpdateCharacteristic(
         this.temperatureService,
@@ -114,11 +114,11 @@ export class NOAAWeatherAccessory {
       this.logError(`Failed to update HomeKit characteristic ${characteristic.displayName || characteristic}:`, e);
 
       try {
-        const serviceType = this.platform.api.hap.Service[service.displayName as keyof typeof this.platform.api.hap.Service];
-        if (serviceType) {
+        const serviceConstructor = this.platform.api.hap.Service[service.displayName as keyof typeof this.platform.api.hap.Service];
+        if (serviceConstructor) {
           NOAAWeatherAccessory.metrics.serviceRecoveries++;
           this.logWarn(`Service ${service.displayName} missing. Attempting to re-add it.`);
-          const newService = this.accessory.addService(serviceType);
+          const newService = this.accessory.addService(serviceConstructor, service.displayName);
           newService.updateCharacteristic(characteristic, value);
         }
       } catch (recoverErr) {
