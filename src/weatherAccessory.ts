@@ -42,11 +42,11 @@ export class NOAAWeatherAccessory {
 
       this.temperatureService =
         accessory.getService(this.platform.api.hap.Service.TemperatureSensor) ||
-        accessory.addService(this.platform.api.hap.Service.TemperatureSensor, 'NOAA Temperature');
+        accessory.addService(this.platform.api.hap.Service.TemperatureSensor, 'NOAA Temperature', this.platform.api.hap.Service.TemperatureSensor.UUID);
 
       this.humidityService =
         accessory.getService(this.platform.api.hap.Service.HumiditySensor) ||
-        accessory.addService(this.platform.api.hap.Service.HumiditySensor, 'NOAA Humidity');
+        accessory.addService(this.platform.api.hap.Service.HumiditySensor, 'NOAA Humidity', this.platform.api.hap.Service.HumiditySensor.UUID);
 
       this.safeUpdateCharacteristic(
         this.temperatureService,
@@ -118,7 +118,11 @@ export class NOAAWeatherAccessory {
         if (serviceConstructor) {
           NOAAWeatherAccessory.metrics.serviceRecoveries++;
           this.logWarn(`Service ${service.displayName} missing. Attempting to re-add it.`);
-          const newService = this.accessory.addService(serviceConstructor, service.displayName);
+          const newService = this.accessory.addService(
+            serviceConstructor,
+            service.displayName,
+            service.UUID
+          );
           newService.updateCharacteristic(characteristic, value);
         }
       } catch (recoverErr) {
