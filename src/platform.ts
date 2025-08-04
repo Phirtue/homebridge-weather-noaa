@@ -1,13 +1,13 @@
 import { 
   API, Logger, PlatformAccessory, PlatformConfig, DynamicPlatformPlugin 
 } from 'homebridge';
-import axios from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { NOAAWeatherAccessory } from './weatherAccessory';
 
 export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
-  private axiosInstance;
+  private axiosInstance!: AxiosInstance;
   private accessories: PlatformAccessory[] = [];
 
   private static metrics = {
@@ -89,9 +89,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   }
 
   private async discoverDevices() {
-    const latitude = this.config.latitude;
-    const longitude = this.config.longitude;
-    const refresh = (this.config.refreshInterval || 5) * 60 * 1000;
+    const latitude: number = this.config.latitude;
+    const longitude: number = this.config.longitude;
+    const refresh: number = (this.config.refreshInterval || 5) * 60 * 1000;
     const cacheFile = path.join(this.api.user.persistPath(), 'noaa-points-cache.json');
 
     if (!latitude || !longitude) {
@@ -121,7 +121,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
     if (!stationId && !this.config.stationId) {
       try {
-        this.log.info(this.formatLog(`🔎 Fetching NOAA stations for coordinates: ${latitude}, ${longitude}`));
+        this.log.info(this.formatLog(`🔎 Fetching NOAA stations for coordinates: ${latitude},${longitude}`));
         const stations = await this.fetchWithRetry(
           `https://api.weather.gov/points/${latitude},${longitude}/stations`
         );
