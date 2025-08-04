@@ -15,7 +15,7 @@
 - Implemented hourly and shutdown metrics logging for easier troubleshooting.
 - All logs now display timestamps in the local timezone of the Homebridge device.
 - Improved logging consistency across both platform and accessory code.
-- Explicitly marked as **Homebridge v2 compatible** ✅
+- Explicitly marked as **Homebridge v2 compatible**
 - Added marketing tagline to highlight NOAA accuracy and v2 readiness.
 
 ### Bug Fixes
