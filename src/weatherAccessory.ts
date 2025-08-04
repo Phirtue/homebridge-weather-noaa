@@ -42,11 +42,19 @@ export class NOAAWeatherAccessory {
 
       this.temperatureService =
         accessory.getService(this.platform.api.hap.Service.TemperatureSensor) ||
-        accessory.addService(this.platform.api.hap.Service.TemperatureSensor, 'NOAA Temperature', this.platform.api.hap.Service.TemperatureSensor.UUID);
+        accessory.addService(
+          this.platform.api.hap.Service.TemperatureSensor,
+          'NOAA Temperature',
+          this.platform.api.hap.Service.TemperatureSensor.UUID
+        );
 
       this.humidityService =
         accessory.getService(this.platform.api.hap.Service.HumiditySensor) ||
-        accessory.addService(this.platform.api.hap.Service.HumiditySensor, 'NOAA Humidity', this.platform.api.hap.Service.HumiditySensor.UUID);
+        accessory.addService(
+          this.platform.api.hap.Service.HumiditySensor,
+          'NOAA Humidity',
+          this.platform.api.hap.Service.HumiditySensor.UUID
+        );
 
       this.safeUpdateCharacteristic(
         this.temperatureService,
@@ -114,16 +122,28 @@ export class NOAAWeatherAccessory {
       this.logError(`Failed to update HomeKit characteristic ${characteristic.displayName || characteristic}:`, e);
 
       try {
-        const serviceConstructor = this.platform.api.hap.Service[service.displayName as keyof typeof this.platform.api.hap.Service];
-        if (serviceConstructor) {
-          NOAAWeatherAccessory.metrics.serviceRecoveries++;
-          this.logWarn(`Service ${service.displayName} missing. Attempting to re-add it.`);
-          const newService = this.accessory.addService(
-            serviceConstructor,
-            service.displayName,
-            service.UUID
+        let newService: Service | null = null;
+
+        if (service.UUID === this.platform.api.hap.Service.TemperatureSensor.UUID) {
+          newService = this.accessory.addService(
+            this.platform.api.hap.Service.TemperatureSensor,
+            'NOAA Temperature',
+            this.platform.api.hap.Service.TemperatureSensor.UUID
           );
+        } else if (service.UUID === this.platform.api.hap.Service.HumiditySensor.UUID) {
+          newService = this.accessory.addService(
+            this.platform.api.hap.Service.HumiditySensor,
+            'NOAA Humidity',
+            this.platform.api.hap.Service.HumiditySensor.UUID
+          );
+        }
+
+        if (newService) {
+          NOAAWeatherAccessory.metrics.serviceRecoveries++;
           newService.updateCharacteristic(characteristic, value);
+          this.logInfo(`Recovered and updated ${service.displayName} service successfully.`);
+        } else {
+          this.logWarn(`Could not match service type for recovery: ${service.displayName}`);
         }
       } catch (recoverErr) {
         this.logError(`Failed to self-recover service ${service.displayName}:`, recoverErr);
