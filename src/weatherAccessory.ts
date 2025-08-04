@@ -4,9 +4,9 @@ import path from 'path';
 import { NOAAWeatherPlatform } from './platform';
 
 export class NOAAWeatherAccessory {
-  private temperatureService: Service;
-  private humidityService: Service;
-  private cacheFile: string;
+  private temperatureService!: Service;
+  private humidityService!: Service;
+  private cacheFile!: string;
   private lastTemperature: number | null = null;
   private lastHumidity: number | null = null;
 
@@ -114,10 +114,11 @@ export class NOAAWeatherAccessory {
       this.logError(`Failed to update HomeKit characteristic ${characteristic.displayName || characteristic}:`, e);
 
       try {
-        if (!this.accessory.getService(service.displayName)) {
+        const serviceType = this.platform.api.hap.Service[service.displayName as keyof typeof this.platform.api.hap.Service];
+        if (serviceType) {
           NOAAWeatherAccessory.metrics.serviceRecoveries++;
           this.logWarn(`Service ${service.displayName} missing. Attempting to re-add it.`);
-          const newService = this.accessory.addService(service.displayName);
+          const newService = this.accessory.addService(serviceType);
           newService.updateCharacteristic(characteristic, value);
         }
       } catch (recoverErr) {
