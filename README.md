@@ -1,4 +1,5 @@
 # Homebridge NOAA Weather Plugin
+[![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=for-the-badge&logoColor=%23FFFFFF&logo=homebridge)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
 
 Homebridge plugin providing temperature and humidity sensors using the [NOAA API](https://www.weather.gov/documentation/services-web-api).
 Automatically detects the closest NOAA station or allows you to manually specify one.
