@@ -24,7 +24,7 @@ sudo npm install -g homebridge-weather-noaa
 
 ### 3. Configure in Homebridge UI
 
-- Go to **Plugins → NOAA Weather → Settings**
+- Go to **Plugins → Homebridge Weather NOAA → Settings**
 - Enter:
   - Latitude / Longitude (decimal format)
   - Polling interval (minutes)
@@ -45,7 +45,7 @@ Two accessories appear:
 - Data is fetched from the nearest NOAA observation station.
 - Observations update every ~5–15 minutes.
 - Adaptive polling reduces API calls if weather is stable.
-- HomeKit uses Celsius internally but will automatically display Fahrenheit based on your region.
+- HomeKit uses Celsius internally but will automatically display Fahrenheit based on your iOS/HomeKit region.
 
 ---
 
