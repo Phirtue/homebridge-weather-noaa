@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.5.0] - 2026-01-31
+
+### Enhancements
+- **Node.js 24 LTS support** — Officially tested and compatible with Node.js 24 (Krypton).
+- **NOAA API alignment** — Uses the modern Points → Gridpoints → Stations flow (replaces deprecated `/points/{lat,lon}/stations`) and requests observations with `require_qc=true` for quality-controlled data.
+- **429 Rate Limiting** — Added proper handling for NOAA API rate limiting with `Retry-After` header support.
+- **Improved service management** — Use stable subtypes (`noaa-temperature`, `noaa-humidity`) with `getServiceById()` to prevent service collisions.
+- **Safer config parsing** — Config values now properly coerced with `Number()` and validated with `Number.isFinite()` to handle string inputs from Homebridge UI.
+- Updated dependencies:
+  - `axios` to ^1.7.9
+  - `typescript` to ^5.7.3
+  - `@types/node` to ^22.10.7
+- Ensures seamless operation on Homebridge installations running Node.js 18, 20, 22, or 24.
+
+### Bug Fixes
+- Fixed potential issue where latitude/longitude of `0` would be incorrectly treated as invalid.
+- Improved TypeScript compatibility by using HAP characteristics via `this.platform.api.hap.Characteristic.*`.
+
+### Notes
+- No breaking changes from 1.4.0.
+- Users on Node.js 24 will no longer see engine compatibility warnings during installation.
+- Existing station caches will be rebuilt on first run to include new grid metadata.
+
 ---
 
 ## [1.4.0] - 2025-08-04
