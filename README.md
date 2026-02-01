@@ -4,6 +4,13 @@
 Homebridge plugin providing temperature and humidity sensors using the [NOAA API](https://www.weather.gov/documentation/services-web-api).
 Automatically detects the closest NOAA station or allows you to manually specify one.
 
+## What’s New in v1.5.0
+
+- Modern NOAA API flow: **Points → Gridpoints → Stations** (avoids deprecated endpoints)
+- Requests **quality-controlled** observations (`require_qc=true`)
+- Improved resilience to NOAA rate limiting (429 with `Retry-After`)
+- Compatibility: Node.js **18 | 20 | 22 | 24** (no config changes required)
+
 ---
 
 ## Setup Instructions
