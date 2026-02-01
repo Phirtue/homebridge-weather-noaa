@@ -3,10 +3,19 @@ import fs from 'fs';
 import path from 'path';
 import { NOAAWeatherPlatform } from './platform';
 
+// Stable subtypes to avoid service collisions
+const TEMP_SUBTYPE = 'noaa-temperature';
+const HUMIDITY_SUBTYPE = 'noaa-humidity';
+
+interface WeatherData {
+  temperature: number | null;
+  humidity: number | null;
+}
+
 export class NOAAWeatherAccessory {
-  private temperatureService!: Service;
-  private humidityService!: Service;
-  private cacheFile!: string;
+  private temperatureService: Service;
+  private humidityService: Service;
+  private readonly cacheFile: string;
   private lastTemperature: number | null = null;
   private lastHumidity: number | null = null;
 
@@ -21,65 +30,67 @@ export class NOAAWeatherAccessory {
     private readonly platform: NOAAWeatherPlatform,
     private readonly accessory: PlatformAccessory,
   ) {
-    try {
-      const persistPath = this.platform.api.user.persistPath();
-      this.cacheFile = path.join(persistPath, 'noaa-weather-last.json');
+    const persistPath = this.platform.api.user.persistPath();
+    this.cacheFile = path.join(persistPath, 'noaa-weather-last.json');
 
-      let lastWeather = { temperature: 20, humidity: 50 };
-      if (fs.existsSync(this.cacheFile)) {
-        try {
-          lastWeather = JSON.parse(fs.readFileSync(this.cacheFile, 'utf8'));
-        } catch (e) {
-          NOAAWeatherAccessory.metrics.cacheResets++;
-          this.logWarn('Corrupted weather cache detected. Resetting cache.', e);
-          try { fs.unlinkSync(this.cacheFile); } catch {}
-        }
+    let lastWeather: WeatherData = { temperature: 20, humidity: 50 };
+    if (fs.existsSync(this.cacheFile)) {
+      try {
+        const cacheContent = fs.readFileSync(this.cacheFile, 'utf8');
+        lastWeather = JSON.parse(cacheContent) as WeatherData;
+      } catch {
+        NOAAWeatherAccessory.metrics.cacheResets++;
+        this.logWarn('Corrupted weather cache detected. Resetting cache.');
+        try { fs.unlinkSync(this.cacheFile); } catch { /* ignore */ }
       }
+    }
 
-      this.lastTemperature = lastWeather.temperature;
-      this.lastHumidity = lastWeather.humidity;
-      accessory.context.weather = lastWeather;
+    this.lastTemperature = lastWeather.temperature;
+    this.lastHumidity = lastWeather.humidity;
+    accessory.context.weather = lastWeather;
 
-      this.temperatureService =
-        accessory.getService(this.platform.api.hap.Service.TemperatureSensor) ||
-        accessory.addService(
-          this.platform.api.hap.Service.TemperatureSensor,
-          'NOAA Temperature',
-          this.platform.api.hap.Service.TemperatureSensor.UUID
-        );
+    // Use getServiceById with stable subtypes to avoid collisions
+    this.temperatureService =
+      this.accessory.getServiceById(this.platform.api.hap.Service.TemperatureSensor, TEMP_SUBTYPE) ||
+      this.accessory.addService(
+        this.platform.api.hap.Service.TemperatureSensor,
+        'NOAA Temperature',
+        TEMP_SUBTYPE,
+      );
 
-      this.humidityService =
-        accessory.getService(this.platform.api.hap.Service.HumiditySensor) ||
-        accessory.addService(
-          this.platform.api.hap.Service.HumiditySensor,
-          'NOAA Humidity',
-          this.platform.api.hap.Service.HumiditySensor.UUID
-        );
+    this.humidityService =
+      this.accessory.getServiceById(this.platform.api.hap.Service.HumiditySensor, HUMIDITY_SUBTYPE) ||
+      this.accessory.addService(
+        this.platform.api.hap.Service.HumiditySensor,
+        'NOAA Humidity',
+        HUMIDITY_SUBTYPE,
+      );
 
+    if (lastWeather.temperature !== null) {
       this.safeUpdateCharacteristic(
         this.temperatureService,
         this.platform.api.hap.Characteristic.CurrentTemperature,
         lastWeather.temperature,
       );
+    }
 
+    if (lastWeather.humidity !== null) {
       this.safeUpdateCharacteristic(
         this.humidityService,
         this.platform.api.hap.Characteristic.CurrentRelativeHumidity,
         lastWeather.humidity,
       );
-
-      this.logInfo(`Initialized HomeKit with cached NOAA weather: ${lastWeather.temperature}°C, ${lastWeather.humidity}%`);
-
-      setInterval(() => this.logMetrics(), 60 * 60 * 1000);
-      process.on('exit', () => this.logMetrics());
-    } catch (err) {
-      this.logError('Failed during NOAAWeatherAccessory constructor:', err);
     }
+
+    this.logInfo(`Initialized HomeKit with cached NOAA weather: ${lastWeather.temperature}°C, ${lastWeather.humidity}%`);
+
+    setInterval(() => this.logMetrics(), 60 * 60 * 1000);
+    process.on('exit', () => this.logMetrics());
   }
 
-  updateValues() {
+  updateValues(): void {
     try {
-      const weather = this.accessory.context.weather;
+      const weather = this.accessory.context.weather as WeatherData;
 
       if (weather.temperature === null || weather.humidity === null) {
         this.logWarn('NOAA returned null values. Keeping last known HomeKit values.');
@@ -102,9 +113,9 @@ export class NOAAWeatherAccessory {
 
       try {
         fs.writeFileSync(this.cacheFile, JSON.stringify(weather));
-      } catch (e) {
+      } catch {
         NOAAWeatherAccessory.metrics.cacheWriteErrors++;
-        this.logError('Failed to write last weather cache:', e);
+        this.logError('Failed to write last weather cache');
       }
 
       this.lastTemperature = weather.temperature;
@@ -114,12 +125,20 @@ export class NOAAWeatherAccessory {
     }
   }
 
-  private safeUpdateCharacteristic(service: Service, characteristic: any, value: any) {
+  /**
+   * Safely update a HomeKit characteristic.
+   * Uses `any` for characteristic param to avoid HAP typing issues across Homebridge versions.
+   */
+  private safeUpdateCharacteristic(
+    service: Service,
+    characteristic: any,
+    value: number,
+  ): void {
     try {
       service.updateCharacteristic(characteristic, value);
-    } catch (e) {
+    } catch {
       NOAAWeatherAccessory.metrics.characteristicErrors++;
-      this.logError(`Failed to update HomeKit characteristic ${characteristic.displayName || characteristic}:`, e);
+      this.logError('Failed to update HomeKit characteristic');
 
       try {
         let newService: Service | null = null;
@@ -128,13 +147,13 @@ export class NOAAWeatherAccessory {
           newService = this.accessory.addService(
             this.platform.api.hap.Service.TemperatureSensor,
             'NOAA Temperature',
-            this.platform.api.hap.Service.TemperatureSensor.UUID
+            TEMP_SUBTYPE,
           );
         } else if (service.UUID === this.platform.api.hap.Service.HumiditySensor.UUID) {
           newService = this.accessory.addService(
             this.platform.api.hap.Service.HumiditySensor,
             'NOAA Humidity',
-            this.platform.api.hap.Service.HumiditySensor.UUID
+            HUMIDITY_SUBTYPE,
           );
         }
 
@@ -151,7 +170,7 @@ export class NOAAWeatherAccessory {
     }
   }
 
-  private logMetrics() {
+  private logMetrics(): void {
     this.logInfo(
       `📊 NOAA Accessory Metrics → Cache Resets: ${NOAAWeatherAccessory.metrics.cacheResets}, ` +
       `Cache Write Errors: ${NOAAWeatherAccessory.metrics.cacheWriteErrors}, ` +
@@ -160,14 +179,20 @@ export class NOAAWeatherAccessory {
     );
   }
 
-  private logInfo(message: string) {
+  private logInfo(message: string): void {
     this.platform.log.info(this.formatLog(message));
   }
-  private logWarn(message: string, data?: any) {
-    this.platform.log.warn(this.formatLog(message), data || '');
+
+  private logWarn(message: string): void {
+    this.platform.log.warn(this.formatLog(message));
   }
-  private logError(message: string, data?: any) {
-    this.platform.log.error(this.formatLog(message), data || '');
+
+  private logError(message: string, data?: unknown): void {
+    if (data !== undefined) {
+      this.platform.log.error(this.formatLog(message), data);
+    } else {
+      this.platform.log.error(this.formatLog(message));
+    }
   }
 
   private formatLog(message: string): string {
