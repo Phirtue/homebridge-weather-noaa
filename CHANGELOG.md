@@ -1,5 +1,108 @@
 # Changelog
 
+## [1.6.0] - 2026-04-28
+
+A security- and minimalism-focused refresh aligned with the current
+[homebridge-plugin-template](https://github.com/homebridge/homebridge-plugin-template)
+and the [NOAA / NWS API documentation](https://www.weather.gov/documentation/services-web-api).
+**No breaking config changes** — existing v1.5 installs upgrade in place.
+
+### Security & hardening
+
+- **Input validation on `stationId`** — both manually configured and
+  cache-loaded values are regex-validated (`^[A-Z0-9]{3,8}$`) before any
+  URL interpolation. Defense-in-depth `encodeURIComponent` applied to all
+  path components.
+- **Grid response validation** — `gridId`/`gridX`/`gridY` are
+  shape-validated before being interpolated into the gridpoint stations
+  URL.
+- **Atomic cache writes** — cache files written via temp-then-rename with
+  `0o600` permissions; eliminates corruption from interrupted writes.
+- **Bounded response size** — NOAA responses capped at 2 MB to defend
+  against pathological payloads.
+- **Bounded `Retry-After`** — server-supplied retry delays capped at
+  5 minutes to prevent indefinite stalls.
+- **Header-injection safe `User-Agent`** — optional `userAgentContact`
+  config field is sanitized to strip CR/LF and length-capped before
+  being placed in the HTTP header.
+- **Coordinate range validation** at both schema and runtime
+  (`-90..90` / `-180..180`).
+
+### Minimization
+
+- **Dropped `axios` dependency entirely** — replaced with native Node 18+
+  `fetch` and `AbortController`. Zero runtime dependencies.
+- **Removed self-heal recovery code** in the accessory — the previous
+  `addService()` retry path could not succeed (Homebridge rejects
+  duplicate subtypes). We now trust HAP-NodeJS and log-and-continue on
+  rare characteristic update failures.
+- **Removed `require_qc=true` query parameter** — verified against the
+  NOAA OpenAPI spec. Replaced with **client-side QC filtering** that
+  accepts MADIS flags `V`, `C`, `S`, `Z` (per
+  [MADIS QC notes](https://madis.ncep.noaa.gov/madis_sfc_qc_notes.shtml)).
+- **Deleted dead state** (`lastTemperature`/`lastHumidity` fields that
+  were written but never read).
+- **Dropped per-instance/static metric duplication** — now a single
+  per-platform metrics object, no leak across child-bridge restarts.
+- **Removed undocumented `Referer` header** — NWS docs do not require it.
+
+### NOAA / NWS correctness
+
+- **NWS-recommended `User-Agent` format** — uses
+  `(github.com/Phirtue/homebridge-weather-noaa, contact)` per the
+  [API docs](https://www.weather.gov/documentation/services-web-api).
+- **Rate-limit floor at 5s** — anchored to NWS docs guidance:
+  *"may be retried after the limit clears (typically within 5 seconds)."*
+- **`unitCode`-aware temperature conversion** — observations reported in
+  `wmoUnit:degF` or `wmoUnit:K` are now correctly converted to °C
+  instead of being trusted blindly as Celsius.
+- **Humidity clamped to `[0, 100]`** before being pushed to HomeKit.
+- **`config.schema.json` `refreshInterval` default** changed to `15` to
+  match the runtime default.
+
+### Reliability
+
+- **No overlapping requests** — polling tick is mutex-guarded so a slow
+  NOAA response cannot cause request pile-up.
+- **Proper teardown** — `setTimeout`/`setInterval` handles tracked and
+  cleared on Homebridge `shutdown` event; timers `unref`'d so they don't
+  hold the event loop open.
+- **`process.on('exit', ...)` listeners removed** — replaced with the
+  Homebridge `shutdown` event so child-bridge restarts don't leak
+  listeners.
+
+### Template alignment
+
+- **Source split into `settings.ts` / `index.ts` / `platform.ts` /
+  `platformAccessory.ts`** matching the current Homebridge plugin
+  template.
+- **Accessories tracked in a `Map<string, PlatformAccessory>`** with O(1)
+  UUID lookup, including stale-accessory cleanup.
+- **`Logging` type used** instead of the deprecated `Logger` alias.
+- **`AccessoryInformation` service populated** with manufacturer, model,
+  serial, and firmware revision.
+- **ESLint flat config** with `--max-warnings=0` enforced via
+  `prepublishOnly`.
+- **Two-arg `registerPlatform`** form per the current Homebridge API.
+
+### Features
+
+- **Adaptive polling** — when readings remain stable across consecutive
+  polls, the interval automatically backs off up to 4× the base.
+  Resets immediately on any change or error. Toggle via `adaptivePolling`
+  config (default: on).
+
+### Notes
+
+- **Stable accessory UUID preserved** (`noaa-weather-unique`) so existing
+  HomeKit room assignments and automations survive the upgrade.
+- Existing station caches are honored if they validate against the new
+  stricter schema; otherwise rebuilt automatically.
+- Optional new config: `userAgentContact` (string) — adds your contact
+  to the NOAA User-Agent header. Recommended by NWS.
+
+---
+
 ## [1.5.0] - 2026-01-31
 
 ### Enhancements

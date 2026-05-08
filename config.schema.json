@@ -13,24 +13,42 @@
       "latitude": {
         "title": "Latitude",
         "type": "number",
-        "required": true
+        "required": true,
+        "minimum": -90,
+        "maximum": 90
       },
       "longitude": {
         "title": "Longitude",
         "type": "number",
-        "required": true
+        "required": true,
+        "minimum": -180,
+        "maximum": 180
       },
       "stationId": {
         "title": "NOAA Station ID (Optional)",
-        "description": "Enter a specific NOAA station ID to override auto-selection (e.g. KSEA).",
+        "description": "Override auto-discovery (e.g. KSEA). Letters and digits only, 3-8 chars.",
         "type": "string",
-        "required": false
+        "required": false,
+        "pattern": "^[A-Za-z0-9]{3,8}$"
       },
       "refreshInterval": {
         "title": "Refresh Interval (minutes)",
         "type": "integer",
         "default": 15,
-        "minimum": 5
+        "minimum": 5,
+        "maximum": 1440
+      },
+      "adaptivePolling": {
+        "title": "Adaptive Polling",
+        "description": "Stretch the polling interval (up to 4x) when readings are unchanged across consecutive polls. Resets immediately on change. Reduces NOAA API load.",
+        "type": "boolean",
+        "default": true
+      },
+      "userAgentContact": {
+        "title": "Contact (User-Agent)",
+        "description": "Optional contact (email or URL) included in the NOAA User-Agent header so NWS can reach you about API issues. Recommended by NWS.",
+        "type": "string",
+        "required": false
       }
     }
   }
