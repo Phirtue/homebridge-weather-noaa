@@ -9,7 +9,7 @@ or accepts a manual station ID.
 
 ## What's New in v1.6.0
 
-A security- and minimalism-focused refresh. **No breaking config changes** —
+A security and minimalism-focused refresh. **No breaking config changes** —
 existing v1.5 installs upgrade in place.
 
 - **Zero runtime dependencies.** Native `fetch` replaces `axios`.
