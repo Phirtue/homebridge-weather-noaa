@@ -25,7 +25,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      - name: Install dependencies (ci or install)
+      - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
             npm ci
@@ -38,9 +38,12 @@ jobs:
           if npm view homebridge@${{ matrix.homebridge-version }} version > /dev/null 2>&1; then
             npm install --no-save homebridge@${{ matrix.homebridge-version }}
           else
-            echo "⚠️ homebridge@${{ matrix.homebridge-version }} not found, using latest"
+            echo "homebridge@${{ matrix.homebridge-version }} not found, using latest"
             npm install --no-save homebridge@latest
           fi
+
+      - name: Lint
+        run: npm run lint
 
       - name: Build TypeScript
         run: npm run build
@@ -50,9 +53,12 @@ jobs:
           node -e "
           const pkg = require('./package.json');
           if (!pkg.keywords.includes('homebridge-plugin')) {
-            throw new Error('❌ Missing homebridge-plugin keyword');
+            throw new Error('Missing homebridge-plugin keyword');
           }
-          console.log('✅ Plugin metadata check passed');"
+          if (pkg.dependencies && Object.keys(pkg.dependencies).length > 0) {
+            throw new Error('Plugin must have zero runtime dependencies');
+          }
+          console.log('Plugin metadata check passed');"
 
       - name: Runtime Test (Start Homebridge with Plugin)
         run: |
@@ -80,9 +86,9 @@ jobs:
           PID=$!
           sleep 10
           if ps -p $PID > /dev/null; then
-            echo "✅ Homebridge started successfully with plugin"
+            echo "Homebridge started successfully with plugin"
             kill $PID
           else
-            echo "❌ Homebridge failed to start"
+            echo "Homebridge failed to start"
             exit 1
           fi
