@@ -1,0 +1,52 @@
+name: Publish to npm
+
+# Publishes when a GitHub release is created. Requires an NPM_TOKEN
+# repository secret (granular token scoped to this package).
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write # attach the SBOM to the GitHub release
+  id-token: write # OIDC token for npm provenance attestation
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # Actions pinned to commit SHAs so a compromised tag cannot inject code.
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # --ignore-scripts keeps dev-dependency lifecycle scripts from running;
+      # lint and build are invoked explicitly below.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      # --provenance links the published tarball to this exact commit and
+      # workflow run via a Sigstore attestation shown on npmjs.com.
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Generate SBOM (CycloneDX)
+        run: npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
+
+      - name: Attach SBOM to release
+        run: gh release upload "$TAG" sbom.cdx.json --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
