@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.8.0] - 2026-07-16
+
+Compatibility and test-coverage release. No functional changes to the
+plugin itself.
+
+### Compatibility
+
+- **Node.js 26 support.** Node 26 (current since April 2026, LTS in
+  October 2026) is now in the `engines` field and the CI test matrix.
+  Users on Node 26 no longer see engine warnings during install.
+
+### CI
+
+- **Homebridge v1 test leg restored.** Since the npm `latest` tag moved
+  to Homebridge 2.x, the claimed `^1.8.0` compatibility was no longer
+  exercised in CI. The matrix now tests Homebridge `^1`, `latest`, and
+  `beta` on every supported Node version (15 jobs).
+- **Meaningful runtime assertions.** The runtime test previously only
+  checked that the Homebridge process stayed alive, which passes even
+  when a plugin fails to load. It now asserts that the plugin registers
+  and its platform initializes, and prints the Homebridge log on failure.
+
+### Documentation
+
+- **README rewritten** for clarity and presentation: configuration
+  reference table, feature summary, security and release-verification
+  section, and consistent formatting throughout.
+
+---
+
 ## [1.7.1] - 2026-07-15
 
 Documentation-only release. No code changes.

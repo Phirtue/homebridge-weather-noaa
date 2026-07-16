@@ -17,8 +17,10 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [18.x, 20.x, 22.x, 24.x]
-        homebridge-version: [latest, beta]
+        node-version: [18.x, 20.x, 22.x, 24.x, 26.x]
+        # "^1" keeps the Homebridge v1 compatibility claim in engines honest
+        # now that the "latest" dist-tag points at 2.x.
+        homebridge-version: ["^1", latest, beta]
 
     steps:
       # Actions pinned to commit SHAs so a compromised tag cannot inject code.
@@ -47,8 +49,8 @@ jobs:
 
       - name: Install Homebridge version ${{ matrix.homebridge-version }}
         run: |
-          if npm view homebridge@${{ matrix.homebridge-version }} version > /dev/null 2>&1; then
-            npm install --no-save --ignore-scripts homebridge@${{ matrix.homebridge-version }}
+          if npm view "homebridge@${{ matrix.homebridge-version }}" version > /dev/null 2>&1; then
+            npm install --no-save --ignore-scripts "homebridge@${{ matrix.homebridge-version }}"
           else
             echo "homebridge@${{ matrix.homebridge-version }} not found, using latest"
             npm install --no-save --ignore-scripts homebridge@latest
@@ -94,13 +96,26 @@ jobs:
             ]
           }
           EOL
-          npx homebridge -U ./homebridge-test &
+          npx homebridge -U ./homebridge-test -P . > ./homebridge-test/run.log 2>&1 &
           PID=$!
-          sleep 10
-          if ps -p $PID > /dev/null; then
-            echo "Homebridge started successfully with plugin"
-            kill $PID
-          else
-            echo "Homebridge failed to start"
+          sleep 15
+          if ! ps -p $PID > /dev/null; then
+            echo "Homebridge process exited early"
+            cat ./homebridge-test/run.log
             exit 1
           fi
+          kill $PID
+          # Process survival alone is not enough: Homebridge keeps running
+          # even when a plugin fails to load. Assert the plugin actually
+          # registered and its platform initialized.
+          if ! grep -q "Registering platform 'homebridge-weather-noaa.NOAAWeather'" ./homebridge-test/run.log; then
+            echo "Plugin did not register with Homebridge"
+            cat ./homebridge-test/run.log
+            exit 1
+          fi
+          if ! grep -q "Initializing NOAAWeather platform" ./homebridge-test/run.log; then
+            echo "Platform did not initialize"
+            cat ./homebridge-test/run.log
+            exit 1
+          fi
+          echo "Runtime test passed: plugin registered and platform initialized"
