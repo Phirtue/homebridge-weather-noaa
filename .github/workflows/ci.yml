@@ -30,21 +30,28 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
+      # Reject lockfile entries that resolve anywhere other than the npm
+      # registry over https (defends against lockfile-poisoning PRs).
+      - name: Lint lockfile
+        run: npx lockfile-lint@5.0.0 --path package-lock.json --allowed-hosts npm --validate-https
+
+      # --ignore-scripts keeps dev-dependency lifecycle scripts from running;
+      # lint and build are invoked explicitly below.
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
-            npm ci
+            npm ci --ignore-scripts
           else
-            npm install
+            npm install --ignore-scripts
           fi
 
       - name: Install Homebridge version ${{ matrix.homebridge-version }}
         run: |
           if npm view homebridge@${{ matrix.homebridge-version }} version > /dev/null 2>&1; then
-            npm install --no-save homebridge@${{ matrix.homebridge-version }}
+            npm install --no-save --ignore-scripts homebridge@${{ matrix.homebridge-version }}
           else
             echo "homebridge@${{ matrix.homebridge-version }} not found, using latest"
-            npm install --no-save homebridge@latest
+            npm install --no-save --ignore-scripts homebridge@latest
           fi
 
       - name: Lint

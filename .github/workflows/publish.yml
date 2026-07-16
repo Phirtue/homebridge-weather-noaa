@@ -24,6 +24,11 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Reject lockfile entries that resolve anywhere other than the npm
+      # registry over https (defends against lockfile poisoning).
+      - name: Lint lockfile
+        run: npx lockfile-lint@5.0.0 --path package-lock.json --allowed-hosts npm --validate-https
+
       # --ignore-scripts keeps dev-dependency lifecycle scripts from running;
       # lint and build are invoked explicitly below.
       - name: Install dependencies
