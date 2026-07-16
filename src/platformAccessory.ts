@@ -3,11 +3,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { NOAAWeatherPlatform } from './platform';
+import { writeJsonAtomic } from './stationCache';
 
 const TEMP_SUBTYPE = 'noaa-temperature';
 const HUMIDITY_SUBTYPE = 'noaa-humidity';
 const CHANGE_EPSILON_TEMP = 0.05;
 const CHANGE_EPSILON_HUMIDITY = 0.5;
+
+/**
+ * HomeKit's CurrentTemperature characteristic accepts -270..100 °C. Values
+ * outside that range (corrupt cache file, bad API data) are clamped so the
+ * characteristic update cannot fail.
+ */
+const TEMP_MIN_C = -270;
+const TEMP_MAX_C = 100;
+
+function clampTemperature(value: number): number {
+  return Math.max(TEMP_MIN_C, Math.min(TEMP_MAX_C, value));
+}
 
 interface WeatherReading {
   temperature: number | null;
@@ -77,18 +90,19 @@ export class NOAAWeatherAccessory {
     let changed = false;
 
     if (reading.temperature !== null) {
+      const temperature = clampTemperature(reading.temperature);
       if (
         this.last.temperature === null ||
-        Math.abs(reading.temperature - this.last.temperature) >= CHANGE_EPSILON_TEMP
+        Math.abs(temperature - this.last.temperature) >= CHANGE_EPSILON_TEMP
       ) {
         changed = true;
       }
       this.update(
         this.temperatureService,
         this.platform.Characteristic.CurrentTemperature,
-        reading.temperature,
+        temperature,
       );
-      this.last.temperature = reading.temperature;
+      this.last.temperature = temperature;
     } else {
       this.platform.log.debug('Temperature null; retaining last known value.');
     }
@@ -111,7 +125,7 @@ export class NOAAWeatherAccessory {
     }
 
     if (this.last.temperature !== null || this.last.humidity !== null) {
-      this.writeCacheAtomic(this.last);
+      writeJsonAtomic(this.platform.log, this.cacheFile, this.last);
     }
 
     if (changed) {
@@ -147,7 +161,7 @@ export class NOAAWeatherAccessory {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.cacheFile, 'utf8')) as Partial<WeatherReading>;
       const t = typeof parsed.temperature === 'number' && Number.isFinite(parsed.temperature)
-        ? parsed.temperature : null;
+        ? clampTemperature(parsed.temperature) : null;
       const h = typeof parsed.humidity === 'number' && Number.isFinite(parsed.humidity)
         ? Math.max(0, Math.min(100, parsed.humidity)) : null;
       return { temperature: t, humidity: h };
@@ -159,21 +173,6 @@ export class NOAAWeatherAccessory {
         /* ignore */
       }
       return { temperature: null, humidity: null };
-    }
-  }
-
-  private writeCacheAtomic(reading: WeatherReading): void {
-    const tmp = `${this.cacheFile}.${process.pid}.tmp`;
-    try {
-      fs.writeFileSync(tmp, JSON.stringify(reading), { mode: 0o600 });
-      fs.renameSync(tmp, this.cacheFile);
-    } catch (err) {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        /* ignore */
-      }
-      this.platform.log.warn(`Failed to persist weather cache: ${(err as Error).message}`);
     }
   }
 }

@@ -48,7 +48,8 @@
         "title": "Contact (User-Agent)",
         "description": "Optional contact (email or URL) included in the NOAA User-Agent header so NWS can reach you about API issues. Recommended by NWS.",
         "type": "string",
-        "required": false
+        "required": false,
+        "maxLength": 200
       }
     }
   }
