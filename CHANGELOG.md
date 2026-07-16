@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.7.1] - 2026-07-15
+
+Documentation-only release. No code changes.
+
+- README refreshed with the v1.7.0 highlights so the npm package page
+  (what the Homebridge UI shows during plugin updates) reflects the
+  current release. npm renders the README bundled at publish time, so a
+  new version was required to carry it.
+
+---
+
 ## [1.7.0] - 2026-07-15
 
 A security-focused release from a full code review against the
