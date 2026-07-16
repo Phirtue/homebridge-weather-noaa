@@ -7,29 +7,38 @@ Homebridge plugin providing temperature and humidity sensors using the
 Automatically detects the closest observation station for your coordinates,
 or accepts a manual station ID.
 
-## What's New in v1.6.0
+## What's New in v1.7.0
 
-A security and minimalism-focused refresh. **No breaking config changes** —
-existing v1.5 installs upgrade in place.
+A security-focused release from a full code review against the
+[Homebridge plugin template](https://github.com/homebridge/homebridge-plugin-template)
+and the [NWS OpenAPI spec](https://api.weather.gov/openapi.json).
+**No breaking config changes** — existing installs upgrade in place.
 
-- **Zero runtime dependencies.** Native `fetch` replaces `axios`.
-- **NWS-compliant `User-Agent`** in the documented
-  `(github.com/Phirtue/homebridge-weather-noaa, contact)` format, with
-  optional configurable contact field (sanitized against header injection).
-- **Hardened input validation** on `stationId` (regex + `encodeURIComponent`),
-  grid response shape, and coordinate bounds.
-- **Atomic cache writes** with `0o600` permissions; bounded response size;
-  `Retry-After` cap.
-- **Client-side QC filtering** using documented MADIS flags (V/C/S/Z),
-  replacing the unreliable `require_qc=true` server flag.
-- **Unit-aware temperature conversion** — handles `°F` and `K` responses
-  in addition to `°C`.
-- **Adaptive polling** — backs off automatically (up to 4×) when readings
-  are stable, recovers immediately on change. Toggleable.
-- **Proper teardown** on Homebridge `shutdown`; per-instance metrics.
-- **Template-aligned source layout** (`settings.ts` / `index.ts` /
-  `platform.ts` / `platformAccessory.ts`) with `Logging` type and
-  `accessories: Map`.
+- **Homebridge 2.x ready** — the plugin is now an ES module, verified on
+  Homebridge 1.11 and 2.1.
+- **Verifiable releases** — published to npm from GitHub Actions via
+  [trusted publishing](https://docs.npmjs.com/trusted-publishers) with a
+  provenance attestation; no npm token exists anywhere. A CycloneDX SBOM
+  is attached to every GitHub release.
+- **Hardened HTTP client** — the 2 MB response cap is enforced while the
+  body streams (oversized payloads are aborted, not buffered), and
+  redirects must stay on the `api.weather.gov` origin.
+- **Temperature clamping** — live and cached readings are clamped to
+  HomeKit's valid range, so a corrupt cache file can never push
+  out-of-range values.
+- **NWS spec alignment** — coordinates rounded to 4 decimals before the
+  `/points` call (avoids a 301 redirect), `Accept: application/geo+json`
+  only, and MADIS QC flag `G` (subjective good) now accepted.
+- **Hardened CI/CD** — CodeQL static analysis, dependency review on PRs,
+  lockfile linting, `--ignore-scripts` installs, SHA-pinned actions,
+  least-privilege tokens, and Dependabot updates.
+- **Cleaner internals** — HTTP retry/backoff and station-cache I/O split
+  into dedicated modules, one typed config parser, version read from
+  `package.json`, quieter routine logs.
+
+Still true from v1.6: zero runtime dependencies, NWS-compliant
+`User-Agent`, validated inputs, atomic `0o600` cache writes, adaptive
+polling, and unit-aware temperature conversion.
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full list.
 
