@@ -1,4 +1,6 @@
-import {
+// Type-only import: runtime values come from the `api` object Homebridge
+// passes in, so nothing is require()'d from the (ESM in v2) homebridge package.
+import type {
   API,
   Characteristic,
   DynamicPlatformPlugin,
@@ -7,54 +9,45 @@ import {
   PlatformConfig,
   Service,
 } from 'homebridge';
-import * as fs from 'fs';
 import * as path from 'path';
 
-import { NOAAWeatherAccessory } from './platformAccessory';
-import { PLATFORM_NAME, PLUGIN_NAME } from './settings';
+import { NOAAWeatherAccessory } from './platformAccessory.js';
+import { NwsClient, NWS_API_BASE } from './nwsClient.js';
+import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './settings.js';
+import { readStationCache, writeJsonAtomic, STATION_ID_RE, PointsCache } from './stationCache.js';
 
-const PLUGIN_VERSION = '1.6.0';
-
-const NOAA_BASE = 'https://api.weather.gov';
-const REQUEST_TIMEOUT_MS = 10_000;
-const RESPONSE_BYTE_CAP = 2_000_000;
-const STATION_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-const STATION_ID_RE = /^[A-Z0-9]{3,8}$/;
 const GRID_ID_RE = /^[A-Z]{2,4}$/;
 
 /**
- * NWS rate-limit guidance: requests "may be retried after the limit clears
- * (typically within 5 seconds)". We anchor backoff floor accordingly.
- * https://www.weather.gov/documentation/services-web-api
+ * The NWS API expects coordinates with at most 4 decimal places; anything
+ * more precise gets a 301 redirect. Rounding client-side saves that round
+ * trip and keeps the station cache key stable.
  */
-const RATE_LIMIT_FLOOR_MS = 5_000;
-const BACKOFF_CEILING_MS = 60_000;
-const RETRY_AFTER_CAP_MS = 5 * 60_000;
-const MAX_RETRIES = 4;
+const COORD_DECIMALS = 4;
 
 /**
  * MADIS QC flags treated as acceptable for HomeKit display:
  *   V = passed all QC checks (best)
  *   C = passed coarse QC checks
  *   S = passed spatial QC checks
+ *   G = subjective good (manually verified by a human)
  *   Z = no QC performed (raw — many ASOS/AWOS sites report this)
- * Rejected: X (failed), Q (questionable), B (subjective bad).
+ * Rejected: X (failed), Q (questionable), B (subjective bad), T (virtual).
  * https://madis.ncep.noaa.gov/madis_sfc_qc_notes.shtml
  */
-const ACCEPTABLE_QC = new Set(['V', 'C', 'S', 'Z']);
+const ACCEPTABLE_QC = new Set(['V', 'C', 'S', 'G', 'Z']);
 
 const ADAPTIVE_GROW_AFTER_UNCHANGED = 3;
 const ADAPTIVE_MAX_MULT = 4;
 
-interface PointsCache {
+/** Validated plugin configuration; null when required fields are unusable. */
+interface PluginConfig {
   latitude: number;
   longitude: number;
-  gridId: string;
-  gridX: number;
-  gridY: number;
-  stationId: string;
-  timestamp: number;
+  baseRefreshMs: number;
+  adaptivePolling: boolean;
+  stationId: string | null;
+  userAgentContact: string | null;
 }
 
 interface PointResponse {
@@ -89,14 +82,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   public readonly Characteristic: typeof Characteristic;
   public readonly accessories: Map<string, PlatformAccessory> = new Map();
 
-  private readonly userAgent: string;
+  private readonly client: NwsClient;
   private readonly timers = new Set<NodeJS.Timeout>();
-  private readonly metrics = {
-    apiFailures: 0,
-    retryCount: 0,
-    rateLimitedCount: 0,
-    stationCacheResets: 0,
-  };
+  private stationCacheResets = 0;
 
   constructor(
     public readonly log: Logging,
@@ -105,7 +93,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   ) {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
-    this.userAgent = this.buildUserAgent();
+    this.client = new NwsClient(log, this.buildUserAgent());
 
     this.log.debug('Finished initializing platform:', this.config.name);
 
@@ -137,6 +125,71 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   }
 
   /**
+   * Parse and validate all config values in one place. Returns null (and
+   * logs why) when the plugin cannot start.
+   */
+  private parseConfig(): PluginConfig | null {
+    const raw = this.config as Record<string, unknown>;
+
+    const toNumber = (v: unknown): number | undefined => {
+      if (v === null || v === undefined || v === '') {
+        return undefined;
+      }
+      const n = Number(v);
+      return Number.isFinite(n) ? n : undefined;
+    };
+
+    const latitude = toNumber(raw.latitude);
+    const longitude = toNumber(raw.longitude);
+    if (
+      latitude === undefined || longitude === undefined ||
+      latitude < -90 || latitude > 90 ||
+      longitude < -180 || longitude > 180
+    ) {
+      this.log.error('Latitude and Longitude must be valid numbers within range. Plugin will not start.');
+      return null;
+    }
+
+    const refreshMinutes = Math.max(5, toNumber(raw.refreshInterval) ?? 15);
+
+    let adaptivePolling = true;
+    if (typeof raw.adaptivePolling === 'boolean') {
+      adaptivePolling = raw.adaptivePolling;
+    } else if (typeof raw.adaptivePolling === 'string') {
+      adaptivePolling = raw.adaptivePolling.toLowerCase() === 'true';
+    }
+
+    let stationId: string | null = null;
+    if (typeof raw.stationId === 'string' && raw.stationId.length > 0) {
+      const upper = raw.stationId.trim().toUpperCase();
+      if (STATION_ID_RE.test(upper)) {
+        stationId = upper;
+      } else {
+        this.log.warn(
+          `Configured stationId "${raw.stationId}" is invalid (expected 3-8 alphanumerics). ` +
+          'Falling back to auto-discovery.',
+        );
+      }
+    }
+
+    const userAgentContact =
+      typeof raw.userAgentContact === 'string' && raw.userAgentContact.trim().length > 0
+        ? raw.userAgentContact
+        : null;
+
+    const round = (v: number): number => Number(v.toFixed(COORD_DECIMALS));
+
+    return {
+      latitude: round(latitude),
+      longitude: round(longitude),
+      baseRefreshMs: refreshMinutes * 60 * 1000,
+      adaptivePolling,
+      stationId,
+      userAgentContact,
+    };
+  }
+
+  /**
    * NWS-recommended User-Agent format: "(myapp.com, contact)".
    * https://www.weather.gov/documentation/services-web-api
    *
@@ -153,233 +206,26 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     return `homebridge-weather-noaa/${PLUGIN_VERSION} (${home})`;
   }
 
-  private getNumberConfig(key: string): number | undefined {
-    const raw = (this.config as Record<string, unknown>)[key];
-    if (raw === null || raw === undefined || raw === '') {
-      return undefined;
-    }
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : undefined;
-  }
-
-  private getBoolConfig(key: string, fallback: boolean): boolean {
-    const raw = (this.config as Record<string, unknown>)[key];
-    if (typeof raw === 'boolean') {
-      return raw;
-    }
-    if (typeof raw === 'string') {
-      return raw.toLowerCase() === 'true';
-    }
-    return fallback;
-  }
-
-  private getStationIdConfig(): string | null {
-    const raw = (this.config as Record<string, unknown>).stationId;
-    if (typeof raw !== 'string' || raw.length === 0) {
-      return null;
-    }
-    const upper = raw.trim().toUpperCase();
-    if (!STATION_ID_RE.test(upper)) {
-      this.log.warn(
-        `Configured stationId "${raw}" is invalid (expected 3-8 alphanumerics). ` +
-        'Falling back to auto-discovery.',
-      );
-      return null;
-    }
-    return upper;
-  }
-
-  /**
-   * Fetch JSON from the NWS API with bounded retries and rate-limit handling.
-   * Native fetch + AbortController; no third-party HTTP client required.
-   */
-  private async fetchJson<T>(url: string): Promise<T> {
-    let attempt = 0;
-    let backoffMs = RATE_LIMIT_FLOOR_MS;
-
-    while (attempt <= MAX_RETRIES) {
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), REQUEST_TIMEOUT_MS);
-
-      try {
-        const res = await fetch(url, {
-          method: 'GET',
-          headers: {
-            'User-Agent': this.userAgent,
-            'Accept': 'application/geo+json, application/ld+json, application/json',
-          },
-          signal: ac.signal,
-          redirect: 'follow',
-        });
-
-        if (res.ok) {
-          const text = await res.text();
-          if (text.length > RESPONSE_BYTE_CAP) {
-            throw new Error(`Response exceeded ${RESPONSE_BYTE_CAP} bytes (${text.length})`);
-          }
-          return JSON.parse(text) as T;
-        }
-
-        if (res.status === 429) {
-          this.metrics.rateLimitedCount++;
-          const waitMs = this.parseRetryAfter(res.headers.get('retry-after'), backoffMs);
-          this.log.warn(`NOAA rate-limited (429). Waiting ${(waitMs / 1000).toFixed(1)}s.`);
-          await this.sleep(waitMs);
-          backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
-          attempt++;
-          this.metrics.retryCount++;
-          continue;
-        }
-
-        if (res.status >= 500 && res.status <= 599) {
-          this.metrics.retryCount++;
-          this.log.warn(
-            `NOAA ${res.status}; retrying in ${(backoffMs / 1000).toFixed(1)}s.`,
-          );
-          await this.sleep(backoffMs);
-          backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
-          attempt++;
-          continue;
-        }
-
-        this.metrics.apiFailures++;
-        throw new Error(`NOAA API ${res.status} ${res.statusText} for ${url}`);
-      } catch (err) {
-        const isAbort = (err as { name?: string })?.name === 'AbortError';
-        const code = (err as { code?: string })?.code;
-        const isNetwork =
-          isAbort ||
-          code === 'ENOTFOUND' || code === 'ECONNRESET' ||
-          code === 'ECONNREFUSED' || code === 'ETIMEDOUT' ||
-          (err instanceof TypeError && /fetch failed/i.test(err.message));
-
-        if (isNetwork && attempt < MAX_RETRIES) {
-          this.metrics.retryCount++;
-          this.log.warn(
-            `Network error (${isAbort ? 'timeout' : (err as Error).message}); ` +
-            `retrying in ${(backoffMs / 1000).toFixed(1)}s.`,
-          );
-          await this.sleep(backoffMs);
-          backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
-          attempt++;
-          continue;
-        }
-
-        this.metrics.apiFailures++;
-        throw err;
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-
-    throw new Error(`NOAA API: exhausted ${MAX_RETRIES} retries for ${url}`);
-  }
-
-  private parseRetryAfter(header: string | null, fallbackMs: number): number {
-    if (!header) {
-      return fallbackMs;
-    }
-    const asInt = Number(header);
-    if (Number.isFinite(asInt) && asInt >= 0) {
-      return Math.min(Math.max(asInt * 1000, RATE_LIMIT_FLOOR_MS), RETRY_AFTER_CAP_MS);
-    }
-    const asDate = Date.parse(header);
-    if (!Number.isNaN(asDate)) {
-      const delta = asDate - Date.now();
-      if (delta > 0) {
-        return Math.min(Math.max(delta, RATE_LIMIT_FLOOR_MS), RETRY_AFTER_CAP_MS);
-      }
-    }
-    return fallbackMs;
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((res) => setTimeout(res, ms));
-  }
-
-  private writeCacheAtomic(file: string, data: PointsCache): void {
-    const tmp = `${file}.${process.pid}.tmp`;
-    try {
-      fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
-      fs.renameSync(tmp, file);
-    } catch (err) {
-      try {
-        fs.unlinkSync(tmp);
-      } catch {
-        /* ignore */
-      }
-      this.log.warn(`Failed to persist station cache: ${(err as Error).message}`);
-    }
-  }
-
-  private readStationCache(
-    cacheFile: string,
-    latitude: number,
-    longitude: number,
-  ): string | null {
-    if (!fs.existsSync(cacheFile)) {
-      return null;
-    }
-    try {
-      const cache = JSON.parse(fs.readFileSync(cacheFile, 'utf8')) as PointsCache;
-      const ageMs = Date.now() - cache.timestamp;
-      const valid =
-        typeof cache.stationId === 'string' &&
-        STATION_ID_RE.test(cache.stationId) &&
-        cache.latitude === latitude &&
-        cache.longitude === longitude &&
-        Number.isFinite(cache.timestamp) &&
-        ageMs >= 0 &&
-        ageMs < STATION_CACHE_TTL_MS;
-
-      if (!valid) {
-        return null;
-      }
-
-      const gridNote =
-        cache.gridId && Number.isFinite(cache.gridX) && Number.isFinite(cache.gridY)
-          ? ` (grid ${cache.gridId}/${cache.gridX},${cache.gridY})`
-          : '';
-      this.log.info(`Using cached NOAA station: ${cache.stationId}${gridNote}`);
-      return cache.stationId;
-    } catch {
-      this.metrics.stationCacheResets++;
-      this.log.warn('Corrupted NOAA station cache. Rebuilding.');
-      try {
-        fs.unlinkSync(cacheFile);
-      } catch {
-        /* ignore */
-      }
-      return null;
-    }
-  }
-
   private async discoverDevices(): Promise<void> {
-    const latitude = this.getNumberConfig('latitude');
-    const longitude = this.getNumberConfig('longitude');
-    const refreshMinutes = Math.max(5, this.getNumberConfig('refreshInterval') ?? 15);
-    const baseRefreshMs = refreshMinutes * 60 * 1000;
-    const adaptive = this.getBoolConfig('adaptivePolling', true);
-    const cacheFile = path.join(this.api.user.persistPath(), 'noaa-points-cache.json');
-
-    if (
-      latitude === undefined || longitude === undefined ||
-      latitude < -90 || latitude > 90 ||
-      longitude < -180 || longitude > 180
-    ) {
-      this.log.error('Latitude and Longitude must be valid numbers within range. Plugin will not start.');
+    const cfg = this.parseConfig();
+    if (!cfg) {
       return;
     }
+    const cacheFile = path.join(this.api.user.persistPath(), 'noaa-points-cache.json');
 
-    let stationId = this.getStationIdConfig();
+    let stationId = cfg.stationId;
     if (stationId) {
       this.log.info(`Using manually configured NOAA station: ${stationId}`);
     } else {
-      stationId = this.readStationCache(cacheFile, latitude, longitude);
+      const cached = readStationCache(this.log, cacheFile, cfg.latitude, cfg.longitude);
+      if (cached.wasCorrupted) {
+        this.stationCacheResets++;
+      }
+      stationId = cached.stationId;
     }
 
     if (!stationId) {
-      stationId = await this.discoverStation(latitude, longitude, cacheFile);
+      stationId = await this.discoverStation(cfg.latitude, cfg.longitude, cacheFile);
       if (!stationId) {
         return;
       }
@@ -400,7 +246,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     }
 
     const handler = new NOAAWeatherAccessory(this, accessory, PLUGIN_VERSION);
-    this.startPolling(stationId, handler, baseRefreshMs, adaptive);
+    this.startPolling(stationId, handler, cfg.baseRefreshMs, cfg.adaptivePolling);
 
     for (const [cachedUuid, cached] of this.accessories) {
       if (cachedUuid !== uuid) {
@@ -419,8 +265,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     try {
       this.log.info(`Fetching NOAA grid data for: ${latitude},${longitude}`);
 
-      const point = await this.fetchJson<PointResponse>(
-        `${NOAA_BASE}/points/${encodeURIComponent(`${latitude},${longitude}`)}`,
+      const point = await this.client.fetchJson<PointResponse>(
+        `${NWS_API_BASE}/points/${encodeURIComponent(`${latitude},${longitude}`)}`,
       );
       const props = point.properties ?? {};
       const gridId = props.gridId;
@@ -438,8 +284,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
       this.log.info(`Grid location: ${gridId}/${gridX},${gridY}`);
 
-      const stations = await this.fetchJson<GridpointStationsResponse>(
-        `${NOAA_BASE}/gridpoints/${encodeURIComponent(gridId)}/${gridX},${gridY}/stations`,
+      const stations = await this.client.fetchJson<GridpointStationsResponse>(
+        `${NWS_API_BASE}/gridpoints/${encodeURIComponent(gridId)}/${gridX},${gridY}/stations`,
       );
 
       const candidates = (stations.features ?? [])
@@ -455,7 +301,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       this.log.info(`Station candidates: ${candidates.slice(0, 10).join(', ')}`);
       this.log.info(`Selected NOAA station: ${stationId}`);
 
-      this.writeCacheAtomic(cacheFile, {
+      const cache: PointsCache = {
         latitude,
         longitude,
         gridId,
@@ -463,7 +309,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         gridY: gridY as number,
         stationId,
         timestamp: Date.now(),
-      });
+      };
+      writeJsonAtomic(this.log, cacheFile, cache);
 
       return stationId;
     } catch (err) {
@@ -523,8 +370,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     stationId: string,
     handler: NOAAWeatherAccessory,
   ): Promise<boolean> {
-    const data = await this.fetchJson<ObservationResponse>(
-      `${NOAA_BASE}/stations/${encodeURIComponent(stationId)}/observations/latest`,
+    const data = await this.client.fetchJson<ObservationResponse>(
+      `${NWS_API_BASE}/stations/${encodeURIComponent(stationId)}/observations/latest`,
     );
 
     const props = data.properties ?? {};
@@ -533,7 +380,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     const conditions =
       props.presentWeather?.map((w) => w?.weather).filter(Boolean).join(', ') || 'None';
 
-    this.log.info(
+    // Routine polls log at debug; applyReading logs at info when values change.
+    this.log.debug(
       `NOAA - ts=${props.timestamp ?? 'n/a'} temp=${tempC ?? 'n/a'}°C ` +
       `humidity=${humidity ?? 'n/a'}% conditions=${conditions}`,
     );
@@ -576,10 +424,11 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   }
 
   private logMetrics(): void {
+    const m = this.client.metrics;
     this.log.info(
-      `NOAA Platform Metrics - failures=${this.metrics.apiFailures} ` +
-      `retries=${this.metrics.retryCount} rateLimited=${this.metrics.rateLimitedCount} ` +
-      `cacheResets=${this.metrics.stationCacheResets}`,
+      `NOAA Platform Metrics - failures=${m.apiFailures} ` +
+      `retries=${m.retryCount} rateLimited=${m.rateLimitedCount} ` +
+      `cacheResets=${this.stationCacheResets}`,
     );
   }
 }

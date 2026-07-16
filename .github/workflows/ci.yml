@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+# Least-privilege token: this workflow only needs to read the repository.
+permissions:
+  contents: read
+
 jobs:
   build-test:
     name: Node ${{ matrix.node-version }} + Homebridge ${{ matrix.homebridge-version }}
@@ -17,29 +21,37 @@ jobs:
         homebridge-version: [latest, beta]
 
     steps:
+      # Actions pinned to commit SHAs so a compromised tag cannot inject code.
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
 
+      # Reject lockfile entries that resolve anywhere other than the npm
+      # registry over https (defends against lockfile-poisoning PRs).
+      - name: Lint lockfile
+        run: npx lockfile-lint@5.0.0 --path package-lock.json --allowed-hosts npm --validate-https
+
+      # --ignore-scripts keeps dev-dependency lifecycle scripts from running;
+      # lint and build are invoked explicitly below.
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
-            npm ci
+            npm ci --ignore-scripts
           else
-            npm install
+            npm install --ignore-scripts
           fi
 
       - name: Install Homebridge version ${{ matrix.homebridge-version }}
         run: |
           if npm view homebridge@${{ matrix.homebridge-version }} version > /dev/null 2>&1; then
-            npm install --no-save homebridge@${{ matrix.homebridge-version }}
+            npm install --no-save --ignore-scripts homebridge@${{ matrix.homebridge-version }}
           else
             echo "homebridge@${{ matrix.homebridge-version }} not found, using latest"
-            npm install --no-save homebridge@latest
+            npm install --no-save --ignore-scripts homebridge@latest
           fi
 
       - name: Lint

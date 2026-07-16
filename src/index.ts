@@ -1,8 +1,8 @@
-import { API } from 'homebridge';
+import type { API } from 'homebridge';
 
-import { NOAAWeatherPlatform } from './platform';
-import { PLATFORM_NAME } from './settings';
+import { NOAAWeatherPlatform } from './platform.js';
+import { PLATFORM_NAME } from './settings.js';
 
-export = (api: API): void => {
+export default (api: API): void => {
   api.registerPlatform(PLATFORM_NAME, NOAAWeatherPlatform);
 };
