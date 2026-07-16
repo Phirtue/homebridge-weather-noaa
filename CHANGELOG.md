@@ -1,5 +1,65 @@
 # Changelog
 
+## [1.7.0] - 2026-07-15
+
+A security-focused release from a full code review against the
+[homebridge-plugin-template](https://github.com/homebridge/homebridge-plugin-template)
+and the [NWS OpenAPI spec](https://api.weather.gov/openapi.json).
+**No breaking config changes** — existing installs upgrade in place.
+
+### Security & hardening
+
+- **Streamed response reads** — the 2 MB response cap is now enforced
+  while the body is being read, aborting oversized payloads instead of
+  buffering them fully before checking.
+- **Redirect origin check** — redirects are followed but the final URL
+  must remain on `api.weather.gov`, or the response is rejected.
+- **Temperature clamping** — live and cached temperatures are clamped to
+  HomeKit's valid range (−270..100 °C), mirroring the existing humidity
+  clamp; a corrupt cache file can no longer push out-of-range values.
+
+### Supply chain
+
+- **npm trusted publishing** — releases are published to npm from GitHub
+  Actions via OIDC with `--provenance`; no npm token exists anywhere.
+- **SBOM** — a CycloneDX SBOM is generated and attached to every GitHub
+  release.
+- **CI hardening** — least-privilege workflow tokens, actions pinned to
+  commit SHAs, `--ignore-scripts` installs, and lockfile linting
+  (registry-only https sources).
+- **CodeQL & dependency review** — static security analysis on every
+  push/PR plus weekly, and PRs introducing dependency versions with
+  known advisories are blocked.
+- **Dependabot** — weekly update PRs for npm and GitHub Actions;
+  dev-dependency advisories in `brace-expansion` and `js-yaml` resolved.
+
+### NOAA / NWS correctness
+
+- **Coordinates rounded to 4 decimals** before the `/points` call,
+  avoiding the API's 301 redirect for over-precise points and keeping
+  the station cache key stable.
+- **`Accept: application/geo+json` only** — previously advertised
+  formats the parser could not handle.
+- **MADIS QC flag `G` (subjective good) accepted** alongside V/C/S/Z.
+
+### Homebridge 2.x compatibility
+
+- **Plugin converted to ESM** (`"type": "module"`, `nodenext` module
+  resolution, type-only homebridge imports) — required to build against
+  Homebridge 2.x, verified working on Homebridge 1.11 and 2.1.
+
+### Structure & maintenance
+
+- **`platform.ts` split** — HTTP client (retry/backoff/429) extracted to
+  `nwsClient.ts` and station cache I/O to `stationCache.ts`.
+- **Single typed `parseConfig()`** replaces scattered config casts.
+- **Version read from `package.json`** instead of a hardcoded constant.
+- **Routine per-poll logs demoted to debug**; changes remain at info.
+- **Toolchain** — eslint 10, TypeScript 6; `userAgentContact` capped at
+  200 chars in the config schema to match runtime sanitization.
+
+---
+
 ## [1.6.0] - 2026-04-28
 
 A security- and minimalism-focused refresh aligned with the current
