@@ -1,9 +1,9 @@
-import { PlatformAccessory, Service } from 'homebridge';
+import type { PlatformAccessory, Service } from 'homebridge';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { NOAAWeatherPlatform } from './platform';
-import { writeJsonAtomic } from './stationCache';
+import { NOAAWeatherPlatform } from './platform.js';
+import { writeJsonAtomic } from './stationCache.js';
 
 const TEMP_SUBTYPE = 'noaa-temperature';
 const HUMIDITY_SUBTYPE = 'noaa-humidity';

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 /** Platform name users register in Homebridge config.json. */
 export const PLATFORM_NAME = 'NOAAWeather';
@@ -13,6 +14,9 @@ export const PLUGIN_NAME = 'homebridge-weather-noaa';
  */
 export const PLUGIN_VERSION: string = (
   JSON.parse(
-    fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'),
+    fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'),
+      'utf8',
+    ),
   ) as { version: string }
 ).version;

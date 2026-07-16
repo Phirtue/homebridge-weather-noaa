@@ -1,4 +1,4 @@
-import { Logging } from 'homebridge';
+import type { Logging } from 'homebridge';
 
 /** Base URL for all NWS API requests. Redirects leaving this origin are rejected. */
 export const NWS_API_BASE = 'https://api.weather.gov';

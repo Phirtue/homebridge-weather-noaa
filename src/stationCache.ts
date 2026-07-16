@@ -1,4 +1,4 @@
-import { Logging } from 'homebridge';
+import type { Logging } from 'homebridge';
 import * as fs from 'fs';
 
 /** Station IDs are 3-8 uppercase alphanumerics (e.g. KSEA, KPAE). */

@@ -1,4 +1,6 @@
-import {
+// Type-only import: runtime values come from the `api` object Homebridge
+// passes in, so nothing is require()'d from the (ESM in v2) homebridge package.
+import type {
   API,
   Characteristic,
   DynamicPlatformPlugin,
@@ -9,10 +11,10 @@ import {
 } from 'homebridge';
 import * as path from 'path';
 
-import { NOAAWeatherAccessory } from './platformAccessory';
-import { NwsClient, NWS_API_BASE } from './nwsClient';
-import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './settings';
-import { readStationCache, writeJsonAtomic, STATION_ID_RE, PointsCache } from './stationCache';
+import { NOAAWeatherAccessory } from './platformAccessory.js';
+import { NwsClient, NWS_API_BASE } from './nwsClient.js';
+import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './settings.js';
+import { readStationCache, writeJsonAtomic, STATION_ID_RE, PointsCache } from './stationCache.js';
 
 const GRID_ID_RE = /^[A-Z]{2,4}$/;
 
