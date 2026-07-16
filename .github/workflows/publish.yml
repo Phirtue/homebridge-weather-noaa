@@ -1,7 +1,9 @@
 name: Publish to npm
 
-# Publishes when a GitHub release is created. Requires an NPM_TOKEN
-# repository secret (granular token scoped to this package).
+# Publishes when a GitHub release is created. Authenticates via npm
+# trusted publishing (GitHub Actions OIDC) — no npm token is stored
+# anywhere. The trusted publisher for this workflow is configured on
+# npmjs.com under the package's Settings.
 on:
   release:
     types: [published]
@@ -40,12 +42,16 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Trusted publishing requires npm CLI >= 11.5; Node 22 bundles an
+      # older version.
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
       # --provenance links the published tarball to this exact commit and
       # workflow run via a Sigstore attestation shown on npmjs.com.
+      # Authentication happens via OIDC (id-token: write), not a token.
       - name: Publish with provenance
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Generate SBOM (CycloneDX)
         run: npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
