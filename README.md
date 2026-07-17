@@ -4,6 +4,7 @@
 
 [![CI Build](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/ci.yml/badge.svg)](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/codeql.yml/badge.svg)](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Phirtue/homebridge-weather-noaa/badge)](https://scorecard.dev/viewer/?uri=github.com/Phirtue/homebridge-weather-noaa)
 [![npm version](https://img.shields.io/npm/v/homebridge-weather-noaa.svg)](https://www.npmjs.com/package/homebridge-weather-noaa)
 ![Node.js](https://img.shields.io/badge/node-18%20%7C%2020%20%7C%2022%20%7C%2024%20%7C%2026-green)
 ![Homebridge](https://img.shields.io/badge/homebridge-v1%20%7C%20v2-blue)
@@ -130,6 +131,8 @@ plugin. Every release can be verified independently:
   [GitHub release](https://github.com/Phirtue/homebridge-weather-noaa/releases).
 - **Pipeline protections.** CodeQL analysis, dependency review, lockfile
   linting, SHA-pinned actions, and branch protection on every change.
+- **OpenSSF Scorecard.** An independent, continuously updated audit of
+  this repository's security posture, published as a public badge above.
 
 Found a vulnerability? Please report it privately via the
 [security policy](./SECURITY.md). Reports are acknowledged within 48

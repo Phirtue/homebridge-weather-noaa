@@ -19,7 +19,10 @@ existing installs upgrade in place.
   than 2 hours now mark both sensors inactive via the HomeKit
   StatusActive characteristic, so automations keyed off outdoor
   readings are not acting on old data presented as current. Sensors
-  recover automatically when fresh observations resume.
+  recover automatically when fresh observations resume. The same
+  threshold also applies when polls fail outright (network outage, DNS
+  breakage), so an extended failure of any kind marks the sensors
+  inactive.
 - **Retry and polling jitter.** All backoff sleeps and the polling
   schedule are randomized by plus or minus 10 percent so the install
   base does not retry in lockstep after an NWS outage.
@@ -44,6 +47,13 @@ existing installs upgrade in place.
   silently test 2.x and report green.
 - **Metrics fix.** Non-retryable HTTP errors were counted twice in the
   hourly failure metrics; the new tests caught it.
+
+### Security
+
+- **OpenSSF Scorecard.** A scheduled Scorecard workflow now audits the
+  repository's security posture (including settings a code reviewer
+  cannot verify from a clone, like enforced branch protection) and
+  publishes the results to a public badge in the README.
 
 ### Housekeeping
 
