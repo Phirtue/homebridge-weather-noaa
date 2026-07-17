@@ -392,6 +392,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       } catch (err) {
         this.log.error('NOAA observation fetch failed:', (err as Error).message);
         unchangedStreak = 0;
+        // Failed polls never reach applyReading, so staleness must be
+        // re-evaluated here or an extended outage leaves sensors active.
+        handler.noteObservationFailure();
       } finally {
         inFlight = false;
         scheduleNext();

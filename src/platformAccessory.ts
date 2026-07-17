@@ -45,6 +45,15 @@ export class NOAAWeatherAccessory {
   private last: WeatherReading = { temperature: null, humidity: null };
   private statusActive = true;
 
+  /**
+   * When the last applied observation was taken (falls back to apply time
+   * if NWS omits the timestamp). Initialized to boot time: a boot from
+   * cache where no poll ever succeeds must eventually go inactive rather
+   * than presenting cached readings as current forever. In-memory only;
+   * observation timestamps are deliberately not persisted.
+   */
+  private lastObservationAppliedMs = Date.now();
+
   constructor(
     private readonly platform: NOAAWeatherPlatform,
     private readonly accessory: PlatformAccessory,
@@ -100,6 +109,19 @@ export class NOAAWeatherAccessory {
   }
 
   /**
+   * Called by the platform when a poll fails outright. applyReading()
+   * evaluates staleness from the observation timestamp, but it only runs
+   * on successful polls; without this hook, an indefinite fetch failure
+   * (WAN down, NWS outage, DNS breakage) would leave the sensors active
+   * while HomeKit presents arbitrarily old readings as current.
+   */
+  noteObservationFailure(): void {
+    if (Date.now() - this.lastObservationAppliedMs > STALE_OBSERVATION_MS) {
+      this.setStatusActive(false);
+    }
+  }
+
+  /**
    * Mark both sensors active or inactive in HomeKit. A dark station keeps
    * returning its last observation; without this, automations keyed off
    * outdoor temperature would act on week-old data presented as current.
@@ -128,6 +150,7 @@ export class NOAAWeatherAccessory {
   applyReading(reading: WeatherReading): boolean {
     let changed = false;
 
+    this.lastObservationAppliedMs = reading.observedAt ?? Date.now();
     if (reading.observedAt !== null && reading.observedAt !== undefined) {
       this.setStatusActive(Date.now() - reading.observedAt <= STALE_OBSERVATION_MS);
     }

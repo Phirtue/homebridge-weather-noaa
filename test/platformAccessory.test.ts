@@ -182,6 +182,63 @@ describe('NOAAWeatherAccessory', () => {
       expect(statusCalls).toHaveLength(0);
     });
 
+    it('marks sensors inactive when polls keep failing past the threshold', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+      acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() });
+      h.temp.updateCharacteristic.mockClear();
+
+      // Failures within the threshold do not flip the state.
+      vi.setSystemTime(new Date('2026-07-17T13:00:00Z'));
+      acc.noteObservationFailure();
+      expect(h.temp.updateCharacteristic)
+        .not.toHaveBeenCalledWith(Characteristic.StatusActive, expect.anything());
+
+      // Past the threshold the sensors go inactive.
+      vi.setSystemTime(new Date('2026-07-17T15:00:01Z'));
+      acc.noteObservationFailure();
+      expect(h.temp.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, false);
+      expect(h.humidity.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, false);
+      vi.useRealTimers();
+    });
+
+    it('recovers to active when a poll succeeds after failures', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+      vi.setSystemTime(new Date('2026-07-17T15:00:00Z'));
+      acc.noteObservationFailure();
+      h.temp.updateCharacteristic.mockClear();
+
+      acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() });
+      expect(h.temp.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, true);
+      vi.useRealTimers();
+    });
+
+    it('goes inactive after a cache-restored boot where every poll fails', () => {
+      fs.writeFileSync(cacheFile(), JSON.stringify({ temperature: 20, humidity: 50 }));
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+      h.temp.updateCharacteristic.mockClear();
+
+      // No applyReading ever runs; only failures.
+      vi.setSystemTime(new Date('2026-07-17T14:00:01Z'));
+      acc.noteObservationFailure();
+      expect(h.temp.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, false);
+      vi.useRealTimers();
+    });
+
     it('leaves staleness untouched when the timestamp is absent', () => {
       const h = makeHarness(dir);
       const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
