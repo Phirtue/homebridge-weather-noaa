@@ -18,9 +18,15 @@ automatically, or you can point it at a specific station.
 - **Survives offline starts.** If the network is not up when Homebridge
   boots, station discovery now retries automatically with a doubling
   backoff instead of staying inactive until a manual restart.
+- **Stale data is flagged.** If a station stops reporting, the sensors
+  are marked inactive in HomeKit after 2 hours instead of presenting
+  old readings as current.
+- **Unit test suite.** 52 tests now cover the retry, parsing, caching,
+  and conversion logic in every CI run.
 - **Hardened further.** The redirect origin check now runs before any
-  response handling, and the npm CLI used by the release pipeline is
-  version-pinned like everything else in it.
+  response handling, the npm CLI used by the release pipeline is
+  version-pinned like everything else in it, and polling gained jitter
+  to be kinder to the free NWS API.
 
 Recent releases brought Node 26 and Homebridge 2.x support, verifiable
 npm releases with provenance and SBOM, a hardened HTTP client, and a
@@ -41,6 +47,9 @@ formal [security policy](./SECURITY.md). See
 - **Quality-controlled data.** Readings that fail MADIS quality control
   are rejected, and temperatures reported in Fahrenheit or Kelvin are
   converted correctly.
+- **Stale-data detection.** If the station stops reporting for 2 hours,
+  the sensors are marked inactive in HomeKit so automations do not act
+  on outdated readings.
 - **Verifiable releases.** Published with npm provenance and a CycloneDX
   SBOM. See [Security](#security) below.
 

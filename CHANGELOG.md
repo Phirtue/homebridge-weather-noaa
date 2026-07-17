@@ -2,9 +2,9 @@
 
 ## [1.9.0] - 2026-07-17
 
-Resilience and hardening release based on an external code review. No
-breaking changes and no config changes; existing installs upgrade in
-place.
+Resilience, testing, and hardening release based on two rounds of
+external code review. No breaking changes and no config changes;
+existing installs upgrade in place.
 
 ### Reliability
 
@@ -14,6 +14,45 @@ place.
   yet), the plugin no longer stays inactive until a manual restart. It
   retries discovery on a doubling backoff, from 1 minute up to a
   15 minute ceiling, indefinitely, and logs each attempt.
+- **Stale observations are flagged.** NWS stations sometimes go dark
+  while the API keeps returning the last observation. Readings older
+  than 2 hours now mark both sensors inactive via the HomeKit
+  StatusActive characteristic, so automations keyed off outdoor
+  readings are not acting on old data presented as current. Sensors
+  recover automatically when fresh observations resume.
+- **Retry and polling jitter.** All backoff sleeps and the polling
+  schedule are randomized by plus or minus 10 percent so the install
+  base does not retry in lockstep after an NWS outage.
+- **Fewer disk writes.** The readings cache is persisted only when a
+  value actually changes, not on every poll. At the default interval
+  this removes roughly 35,000 unnecessary write cycles a year on
+  Raspberry Pi SD cards.
+
+### Testing
+
+- **Unit test suite added (Vitest, 52 tests).** Covers retry and
+  backoff behavior, Retry-After clamping, the streaming byte cap,
+  config validation, User-Agent sanitization, unit conversion including
+  the Kelvin branch, MADIS QC filtering, station cache validation
+  against tampered and expired files, cache write gating, and the
+  staleness transitions. Runs in every CI matrix cell. Vitest is a
+  devDependency; the published package still has zero runtime
+  dependencies.
+- **CI matrix cells fail honestly.** The Homebridge install step no
+  longer falls back to the latest version when the requested version
+  cannot be resolved, so the v1 compatibility cell can no longer
+  silently test 2.x and report green.
+- **Metrics fix.** Non-retryable HTTP errors were counted twice in the
+  hourly failure metrics; the new tests caught it.
+
+### Housekeeping
+
+- Example coordinates unified on the Space Needle in Seattle, WA.
+- README now recommends running the plugin as a child bridge.
+- SECURITY.md points at the latest release instead of naming a version
+  that can go stale.
+- Dropped the DOM lib from the TypeScript config; @types/node provides
+  the fetch typings, and browser globals no longer typecheck.
 
 ### Security & hardening
 
