@@ -6,15 +6,9 @@ if people who find problems have a safe, private way to tell us.
 
 ## Supported Versions
 
-Only the latest released minor version receives security fixes.
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.7.x   | :white_check_mark: |
-| < 1.7   | :x:                |
-
-If you are on an older version, upgrade before reporting — the issue may
-already be fixed.
+Only the [latest released version](https://github.com/Phirtue/homebridge-weather-noaa/releases/latest)
+receives security fixes. If you are on an older version, upgrade before
+reporting — the issue may already be fixed.
 
 ## Reporting a Vulnerability
 
