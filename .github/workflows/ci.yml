@@ -89,8 +89,8 @@ jobs:
               {
                 "platform": "NOAAWeather",
                 "name": "NOAA Weather",
-                "latitude": 47.91288,
-                "longitude": -122.09818,
+                "latitude": 47.6204,
+                "longitude": -122.3494,
                 "refreshInterval": 15
               }
             ]

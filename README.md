@@ -63,8 +63,8 @@ or add the platform to `config.json` directly.
 
 | Setting | Key | Required | Default | Description |
 | ------- | --- | -------- | ------- | ----------- |
-| Latitude | `latitude` | Yes | none | Decimal degrees, for example `47.6062` |
-| Longitude | `longitude` | Yes | none | Decimal degrees, for example `-122.3321` |
+| Latitude | `latitude` | Yes | none | Decimal degrees, for example `47.6204` |
+| Longitude | `longitude` | Yes | none | Decimal degrees, for example `-122.3494` |
 | Refresh Interval | `refreshInterval` | No | `15` | Minutes between updates, minimum 5 |
 | NOAA Station ID | `stationId` | No | auto | Overrides discovery, for example `KSEA` |
 | Adaptive Polling | `adaptivePolling` | No | `true` | Slows polling while readings are stable |
@@ -76,11 +76,13 @@ Example `config.json` entry:
 {
   "platform": "NOAAWeather",
   "name": "NOAA Weather",
-  "latitude": 47.6062,
-  "longitude": -122.3321,
+  "latitude": 47.6204,
+  "longitude": -122.3494,
   "refreshInterval": 15
 }
 ```
+
+The example coordinates are the Space Needle in Seattle, WA.
 
 ### 4. Run
 
@@ -100,6 +102,11 @@ Two accessories appear in HomeKit under "NOAA Weather":
   Fahrenheit automatically based on your region.
 - Cache files live in the Homebridge persist path with owner-only
   permissions (`0o600`).
+- Running the plugin as a
+  [child bridge](https://github.com/homebridge/homebridge/wiki/Child-Bridges)
+  is supported and recommended, as it is for any plugin: it isolates the
+  plugin in its own process so an issue in one plugin cannot affect
+  another.
 
 ## Security
 
