@@ -4,6 +4,7 @@
 
 [![CI Build](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/ci.yml/badge.svg)](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/codeql.yml/badge.svg)](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Phirtue/homebridge-weather-noaa/badge)](https://scorecard.dev/viewer/?uri=github.com/Phirtue/homebridge-weather-noaa)
 [![npm version](https://img.shields.io/npm/v/homebridge-weather-noaa.svg)](https://www.npmjs.com/package/homebridge-weather-noaa)
 ![Node.js](https://img.shields.io/badge/node-18%20%7C%2020%20%7C%2022%20%7C%2024%20%7C%2026-green)
 ![Homebridge](https://img.shields.io/badge/homebridge-v1%20%7C%20v2-blue)
@@ -13,25 +14,33 @@ Temperature and humidity sensors for HomeKit, powered by the free
 The plugin finds the observation station closest to your coordinates
 automatically, or you can point it at a specific station.
 
-## What's New in v1.8.0
+## What's New in v1.9.0
 
-- **Node.js 26 support.** Installs cleanly on Node 26 with no engine
-  warnings.
-- **Broader CI coverage.** Every release is now tested on five Node
-  versions against Homebridge v1, v2, and the v2 beta, and the runtime
-  test verifies the plugin actually registers and initializes.
+- **Survives offline starts.** If the network is not up when Homebridge
+  boots, station discovery now retries automatically with a doubling
+  backoff instead of staying inactive until a manual restart.
+- **Stale data is flagged.** If a station stops reporting, the sensors
+  are marked inactive in HomeKit after 2 hours instead of presenting
+  old readings as current.
+- **Unit test suite.** 52 tests now cover the retry, parsing, caching,
+  and conversion logic in every CI run.
+- **Hardened further.** The redirect origin check now runs before any
+  response handling, the npm CLI used by the release pipeline is
+  version-pinned like everything else in it, and polling gained jitter
+  to be kinder to the free NWS API.
 
-Recent 1.7.x releases brought Homebridge 2.x support, verifiable npm
-releases with provenance and SBOM, a hardened HTTP client, and a formal
-[security policy](./SECURITY.md). See [CHANGELOG.md](./CHANGELOG.md) for
-full details.
+Recent releases brought Node 26 and Homebridge 2.x support, verifiable
+npm releases with provenance and SBOM, a hardened HTTP client, and a
+formal [security policy](./SECURITY.md). See
+[CHANGELOG.md](./CHANGELOG.md) for full details.
 
 ## Features
 
 - **Zero runtime dependencies.** Built on native `fetch`; the published
   package contains only compiled plugin code.
 - **Automatic station discovery** using the NOAA points and gridpoints
-  APIs, cached for 30 days.
+  APIs, cached for 30 days and retried with backoff when the network is
+  down at boot.
 - **Adaptive polling** that stretches the refresh interval up to 4x when
   readings are stable and snaps back on any change.
 - **Persistent readings.** HomeKit shows the last known values
@@ -39,6 +48,9 @@ full details.
 - **Quality-controlled data.** Readings that fail MADIS quality control
   are rejected, and temperatures reported in Fahrenheit or Kelvin are
   converted correctly.
+- **Stale-data detection.** If the station stops reporting for 2 hours,
+  the sensors are marked inactive in HomeKit so automations do not act
+  on outdated readings.
 - **Verifiable releases.** Published with npm provenance and a CycloneDX
   SBOM. See [Security](#security) below.
 
@@ -61,8 +73,8 @@ or add the platform to `config.json` directly.
 
 | Setting | Key | Required | Default | Description |
 | ------- | --- | -------- | ------- | ----------- |
-| Latitude | `latitude` | Yes | none | Decimal degrees, for example `47.6062` |
-| Longitude | `longitude` | Yes | none | Decimal degrees, for example `-122.3321` |
+| Latitude | `latitude` | Yes | none | Decimal degrees, for example `47.6204` |
+| Longitude | `longitude` | Yes | none | Decimal degrees, for example `-122.3494` |
 | Refresh Interval | `refreshInterval` | No | `15` | Minutes between updates, minimum 5 |
 | NOAA Station ID | `stationId` | No | auto | Overrides discovery, for example `KSEA` |
 | Adaptive Polling | `adaptivePolling` | No | `true` | Slows polling while readings are stable |
@@ -74,11 +86,13 @@ Example `config.json` entry:
 {
   "platform": "NOAAWeather",
   "name": "NOAA Weather",
-  "latitude": 47.6062,
-  "longitude": -122.3321,
+  "latitude": 47.6204,
+  "longitude": -122.3494,
   "refreshInterval": 15
 }
 ```
+
+The example coordinates are the Space Needle in Seattle, WA.
 
 ### 4. Run
 
@@ -98,6 +112,11 @@ Two accessories appear in HomeKit under "NOAA Weather":
   Fahrenheit automatically based on your region.
 - Cache files live in the Homebridge persist path with owner-only
   permissions (`0o600`).
+- Running the plugin as a
+  [child bridge](https://github.com/homebridge/homebridge/wiki/Child-Bridges)
+  is supported and recommended, as it is for any plugin: it isolates the
+  plugin in its own process so an issue in one plugin cannot affect
+  another.
 
 ## Security
 
@@ -112,6 +131,8 @@ plugin. Every release can be verified independently:
   [GitHub release](https://github.com/Phirtue/homebridge-weather-noaa/releases).
 - **Pipeline protections.** CodeQL analysis, dependency review, lockfile
   linting, SHA-pinned actions, and branch protection on every change.
+- **OpenSSF Scorecard.** An independent, continuously updated audit of
+  this repository's security posture, published as a public badge above.
 
 Found a vulnerability? Please report it privately via the
 [security policy](./SECURITY.md). Reports are acknowledged within 48

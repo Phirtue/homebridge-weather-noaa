@@ -17,6 +17,16 @@ const RETRY_AFTER_CAP_MS = 5 * 60_000;
 const MAX_RETRIES = 4;
 
 /**
+ * Randomize a delay to +/-10% so the whole install base does not retry
+ * (or poll) in lockstep after an NWS outage. Deterministic schedules
+ * synchronize across users because everyone's timer starts at the same
+ * event: the service coming back.
+ */
+export function withJitter(ms: number): number {
+  return Math.round(ms * (0.9 + Math.random() * 0.2));
+}
+
+/**
  * Minimal HTTP client for the NWS API built on native fetch.
  *
  * Responsibilities:
@@ -58,15 +68,19 @@ export class NwsClient {
           redirect: 'follow',
         });
 
+        // Validate the post-redirect origin before acting on ANY part of the
+        // response, including status codes and Retry-After headers. An
+        // off-origin server must not be able to influence retry timing.
+        this.assertNwsOrigin(res.url);
+
         if (res.ok) {
-          this.assertNwsOrigin(res.url);
           const text = await this.readBodyCapped(res);
           return JSON.parse(text) as T;
         }
 
         if (res.status === 429) {
           this.metrics.rateLimitedCount++;
-          const waitMs = this.parseRetryAfter(res.headers.get('retry-after'), backoffMs);
+          const waitMs = withJitter(this.parseRetryAfter(res.headers.get('retry-after'), backoffMs));
           this.log.warn(`NOAA rate-limited (429). Waiting ${(waitMs / 1000).toFixed(1)}s.`);
           await this.sleep(waitMs);
           backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
@@ -80,13 +94,14 @@ export class NwsClient {
           this.log.warn(
             `NOAA ${res.status}; retrying in ${(backoffMs / 1000).toFixed(1)}s.`,
           );
-          await this.sleep(backoffMs);
+          await this.sleep(withJitter(backoffMs));
           backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
           attempt++;
           continue;
         }
 
-        this.metrics.apiFailures++;
+        // No apiFailures++ here: the catch below counts this throw, and
+        // incrementing in both places double-counted non-retryable errors.
         throw new Error(`NOAA API ${res.status} ${res.statusText} for ${url}`);
       } catch (err) {
         const isAbort = (err as { name?: string })?.name === 'AbortError';
@@ -103,7 +118,7 @@ export class NwsClient {
             `Network error (${isAbort ? 'timeout' : (err as Error).message}); ` +
             `retrying in ${(backoffMs / 1000).toFixed(1)}s.`,
           );
-          await this.sleep(backoffMs);
+          await this.sleep(withJitter(backoffMs));
           backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
           attempt++;
           continue;
@@ -122,7 +137,8 @@ export class NwsClient {
   /**
    * fetch() follows redirects transparently (the NWS API issues 301s, e.g.
    * for over-precise /points coordinates). Verify the final URL is still on
-   * the NWS origin before trusting the body.
+   * the NWS origin before trusting any part of the response: status code,
+   * headers (Retry-After), or body.
    */
   private assertNwsOrigin(finalUrl: string): void {
     if (!finalUrl) {

@@ -1,5 +1,93 @@
 # Changelog
 
+## [1.9.0] - 2026-07-17
+
+Resilience, testing, and hardening release based on two rounds of
+external code review. No breaking changes and no config changes;
+existing installs upgrade in place.
+
+### Reliability
+
+- **Startup discovery now retries.** If station discovery fails when
+  Homebridge boots (for example after a power outage, when the router
+  and the Homebridge host restart together and the network is not up
+  yet), the plugin no longer stays inactive until a manual restart. It
+  retries discovery on a doubling backoff, from 1 minute up to a
+  15 minute ceiling, indefinitely, and logs each attempt.
+- **Stale observations are flagged.** NWS stations sometimes go dark
+  while the API keeps returning the last observation. Readings older
+  than 2 hours now mark both sensors inactive via the HomeKit
+  StatusActive characteristic, so automations keyed off outdoor
+  readings are not acting on old data presented as current. Sensors
+  recover automatically when fresh observations resume. The same
+  threshold also applies when polls fail outright (network outage, DNS
+  breakage), so an extended failure of any kind marks the sensors
+  inactive.
+- **Retry and polling jitter.** All backoff sleeps and the polling
+  schedule are randomized by plus or minus 10 percent so the install
+  base does not retry in lockstep after an NWS outage.
+- **Fewer disk writes.** The readings cache is persisted only when a
+  value actually changes, not on every poll. At the default interval
+  this removes roughly 35,000 unnecessary write cycles a year on
+  Raspberry Pi SD cards.
+
+### Testing
+
+- **Unit test suite added (Vitest, 52 tests).** Covers retry and
+  backoff behavior, Retry-After clamping, the streaming byte cap,
+  config validation, User-Agent sanitization, unit conversion including
+  the Kelvin branch, MADIS QC filtering, station cache validation
+  against tampered and expired files, cache write gating, and the
+  staleness transitions. Runs in every CI matrix cell. Vitest is a
+  devDependency; the published package still has zero runtime
+  dependencies.
+- **CI matrix cells fail honestly.** The Homebridge install step no
+  longer falls back to the latest version when the requested version
+  cannot be resolved, so the v1 compatibility cell can no longer
+  silently test 2.x and report green.
+- **Metrics fix.** Non-retryable HTTP errors were counted twice in the
+  hourly failure metrics; the new tests caught it.
+
+### Security
+
+- **OpenSSF Scorecard.** A scheduled Scorecard workflow now audits the
+  repository's security posture (including settings a code reviewer
+  cannot verify from a clone, like enforced branch protection) and
+  publishes the results to a public badge in the README.
+
+### Housekeeping
+
+- Example coordinates unified on the Space Needle in Seattle, WA.
+- README now recommends running the plugin as a child bridge.
+- SECURITY.md points at the latest release instead of naming a version
+  that can go stale.
+- Dropped the DOM lib from the TypeScript config; @types/node provides
+  the fetch typings, and browser globals no longer typecheck.
+
+### Security & hardening
+
+- **Redirect origin check moved ahead of status handling.** The final
+  post-redirect URL is now validated against `api.weather.gov` before
+  any part of the response is acted on. Previously the check ran only
+  for successful responses, so an off-origin redirect returning 429 or
+  5xx could influence retry timing through its `Retry-After` header.
+  Impact was bounded (waits are capped and no response body was ever
+  trusted), but the invariant is now unconditional.
+- **npm CLI pinned in the publish workflow.** The release job installed
+  `npm@latest` at publish time, the only unpinned code in an otherwise
+  fully SHA-pinned pipeline. It now installs an exact version
+  (`npm@11.17.0`), so a compromised npm release cannot inject code into
+  the publish job.
+
+### Diagnostics
+
+- **Missing unitCode is logged.** A temperature reading without a
+  `unitCode` is still treated as Celsius (matching NWS behavior in
+  practice), but the assumption is now logged once at debug level so a
+  misbehaving station is diagnosable.
+
+---
+
 ## [1.8.0] - 2026-07-16
 
 Compatibility and test-coverage release. No functional changes to the

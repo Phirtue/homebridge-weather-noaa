@@ -47,20 +47,19 @@ jobs:
             npm install --ignore-scripts
           fi
 
+      # No fallback: silently substituting another Homebridge version would
+      # let a matrix cell report green without testing what it claims to.
       - name: Install Homebridge version ${{ matrix.homebridge-version }}
-        run: |
-          if npm view "homebridge@${{ matrix.homebridge-version }}" version > /dev/null 2>&1; then
-            npm install --no-save --ignore-scripts "homebridge@${{ matrix.homebridge-version }}"
-          else
-            echo "homebridge@${{ matrix.homebridge-version }} not found, using latest"
-            npm install --no-save --ignore-scripts homebridge@latest
-          fi
+        run: npm install --no-save --ignore-scripts "homebridge@${{ matrix.homebridge-version }}"
 
       - name: Lint
         run: npm run lint
 
       - name: Build TypeScript
         run: npm run build
+
+      - name: Unit tests
+        run: npm test
 
       - name: Verify Plugin Metadata
         run: |
@@ -89,8 +88,8 @@ jobs:
               {
                 "platform": "NOAAWeather",
                 "name": "NOAA Weather",
-                "latitude": 47.91288,
-                "longitude": -122.09818,
+                "latitude": 47.6204,
+                "longitude": -122.3494,
                 "refreshInterval": 15
               }
             ]

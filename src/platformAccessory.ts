@@ -22,9 +22,20 @@ function clampTemperature(value: number): number {
   return Math.max(TEMP_MIN_C, Math.min(TEMP_MAX_C, value));
 }
 
+/**
+ * Observations older than this are treated as stale and the sensors are
+ * marked inactive. NWS stations typically report hourly and QC processing
+ * can add up to 20 minutes; two hours of silence means the station is dark
+ * (AWOS sites do this routinely) and HomeKit should not present the last
+ * reading as current.
+ */
+const STALE_OBSERVATION_MS = 2 * 60 * 60 * 1000;
+
 interface WeatherReading {
   temperature: number | null;
   humidity: number | null;
+  /** Epoch ms of the observation itself, or null when NWS omits the timestamp. */
+  observedAt?: number | null;
 }
 
 export class NOAAWeatherAccessory {
@@ -32,6 +43,16 @@ export class NOAAWeatherAccessory {
   private readonly humidityService: Service;
   private readonly cacheFile: string;
   private last: WeatherReading = { temperature: null, humidity: null };
+  private statusActive = true;
+
+  /**
+   * When the last applied observation was taken (falls back to apply time
+   * if NWS omits the timestamp). Initialized to boot time: a boot from
+   * cache where no poll ever succeeds must eventually go inactive rather
+   * than presenting cached readings as current forever. In-memory only;
+   * observation timestamps are deliberately not persisted.
+   */
+  private lastObservationAppliedMs = Date.now();
 
   constructor(
     private readonly platform: NOAAWeatherPlatform,
@@ -75,10 +96,50 @@ export class NOAAWeatherAccessory {
       );
     }
 
+    // Cached readings carry no observation timestamp, so staleness cannot
+    // be judged at boot. Start active; the first live poll (within a
+    // minute) settles it.
+    this.update(this.temperatureService, this.platform.Characteristic.StatusActive, true);
+    this.update(this.humidityService, this.platform.Characteristic.StatusActive, true);
+
     this.platform.log.info(
       'Initialized HomeKit with cached NOAA readings: ' +
       `temp=${this.last.temperature ?? 'n/a'}°C humidity=${this.last.humidity ?? 'n/a'}%`,
     );
+  }
+
+  /**
+   * Called by the platform when a poll fails outright. applyReading()
+   * evaluates staleness from the observation timestamp, but it only runs
+   * on successful polls; without this hook, an indefinite fetch failure
+   * (WAN down, NWS outage, DNS breakage) would leave the sensors active
+   * while HomeKit presents arbitrarily old readings as current.
+   */
+  noteObservationFailure(): void {
+    if (Date.now() - this.lastObservationAppliedMs > STALE_OBSERVATION_MS) {
+      this.setStatusActive(false);
+    }
+  }
+
+  /**
+   * Mark both sensors active or inactive in HomeKit. A dark station keeps
+   * returning its last observation; without this, automations keyed off
+   * outdoor temperature would act on week-old data presented as current.
+   */
+  private setStatusActive(active: boolean): void {
+    if (active === this.statusActive) {
+      return;
+    }
+    this.statusActive = active;
+    if (active) {
+      this.platform.log.info('Station reporting again; sensors marked active.');
+    } else {
+      this.platform.log.warn(
+        'Observation is stale (station may be offline); sensors marked inactive.',
+      );
+    }
+    this.update(this.temperatureService, this.platform.Characteristic.StatusActive, active);
+    this.update(this.humidityService, this.platform.Characteristic.StatusActive, active);
   }
 
   /**
@@ -88,6 +149,11 @@ export class NOAAWeatherAccessory {
    */
   applyReading(reading: WeatherReading): boolean {
     let changed = false;
+
+    this.lastObservationAppliedMs = reading.observedAt ?? Date.now();
+    if (reading.observedAt !== null && reading.observedAt !== undefined) {
+      this.setStatusActive(Date.now() - reading.observedAt <= STALE_OBSERVATION_MS);
+    }
 
     if (reading.temperature !== null) {
       const temperature = clampTemperature(reading.temperature);
@@ -124,7 +190,11 @@ export class NOAAWeatherAccessory {
       this.platform.log.debug('Humidity null; retaining last known value.');
     }
 
-    if (this.last.temperature !== null || this.last.humidity !== null) {
+    // Persist only when a value actually changed: identical data is not
+    // worth a write+rename cycle against what is often an SD card. The
+    // in-memory value may lead the persisted one by up to the change
+    // epsilon, which is negligible for a restart cache.
+    if (changed && (this.last.temperature !== null || this.last.humidity !== null)) {
       writeJsonAtomic(this.platform.log, this.cacheFile, this.last);
     }
 
@@ -143,7 +213,7 @@ export class NOAAWeatherAccessory {
   private update(
     service: Service,
     characteristic: Parameters<Service['updateCharacteristic']>[0],
-    value: number,
+    value: number | boolean,
   ): void {
     try {
       service.updateCharacteristic(characteristic, value);

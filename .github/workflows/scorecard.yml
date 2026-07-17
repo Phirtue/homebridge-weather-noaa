@@ -1,0 +1,42 @@
+name: OpenSSF Scorecard
+
+# Third-party verifiability for the security claims this repository makes:
+# Scorecard audits things a code reviewer cannot verify from a clone, such
+# as whether branch protection is actually enforced. Results publish to
+# the public Scorecard API (the README badge) and to code scanning.
+on:
+  schedule:
+    - cron: '30 14 * * 1'
+  push:
+    branches: [main]
+  # Re-run when branch protection settings change, since Scorecard scores them.
+  branch_protection_rule:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload SARIF to code scanning
+      id-token: write # publish results to the Scorecard REST API for the badge
+
+    steps:
+      # Actions pinned to commit SHAs so a compromised tag cannot inject code.
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload results to code scanning
+        uses: github/codeql-action/upload-sarif@1ad29ea4a422cce9a242a9fae469541dcd08addc # v4
+        with:
+          sarif_file: results.sarif

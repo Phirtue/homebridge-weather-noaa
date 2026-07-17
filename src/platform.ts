@@ -12,7 +12,7 @@ import type {
 import * as path from 'path';
 
 import { NOAAWeatherAccessory } from './platformAccessory.js';
-import { NwsClient, NWS_API_BASE } from './nwsClient.js';
+import { NwsClient, NWS_API_BASE, withJitter } from './nwsClient.js';
 import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './settings.js';
 import { readStationCache, writeJsonAtomic, STATION_ID_RE, PointsCache } from './stationCache.js';
 
@@ -39,6 +39,14 @@ const ACCEPTABLE_QC = new Set(['V', 'C', 'S', 'G', 'Z']);
 
 const ADAPTIVE_GROW_AFTER_UNCHANGED = 3;
 const ADAPTIVE_MAX_MULT = 4;
+
+/**
+ * Backoff schedule for retrying station discovery after a startup failure
+ * (e.g. Homebridge boots before the WAN link is up). Doubles from 1 minute
+ * to a 15 minute ceiling and retries indefinitely.
+ */
+const DISCOVERY_RETRY_INITIAL_MS = 60_000;
+const DISCOVERY_RETRY_MAX_MS = 15 * 60_000;
 
 /** Validated plugin configuration; null when required fields are unusable. */
 interface PluginConfig {
@@ -85,6 +93,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   private readonly client: NwsClient;
   private readonly timers = new Set<NodeJS.Timeout>();
   private stationCacheResets = 0;
+  private discoveryRetryMs = DISCOVERY_RETRY_INITIAL_MS;
+  private assumedCelsiusLogged = false;
+  private handler: NOAAWeatherAccessory | null = null;
 
   constructor(
     public readonly log: Logging,
@@ -213,6 +224,21 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     }
     const cacheFile = path.join(this.api.user.persistPath(), 'noaa-points-cache.json');
 
+    // Stable UUID — preserved from v1.5 so existing HomeKit room assignments
+    // and automations survive the upgrade.
+    const uuid = this.api.hap.uuid.generate('noaa-weather-unique');
+
+    // If HomeKit already knows this accessory from a previous run, attach
+    // the handler before station resolution: HomeKit is already presenting
+    // the old readings, so staleness must be tracked even while discovery
+    // keeps failing. On a first run there is nothing in HomeKit to go
+    // stale, and the accessory is only created after discovery succeeds.
+    const restored = this.accessories.get(uuid);
+    if (restored && !this.handler) {
+      this.log.info('Restoring NOAA Weather accessory from cache.');
+      this.handler = new NOAAWeatherAccessory(this, restored, PLUGIN_VERSION);
+    }
+
     let stationId = cfg.stationId;
     if (stationId) {
       this.log.info(`Using manually configured NOAA station: ${stationId}`);
@@ -227,26 +253,26 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     if (!stationId) {
       stationId = await this.discoverStation(cfg.latitude, cfg.longitude, cacheFile);
       if (!stationId) {
+        // Same clock as failed polls: readings restored from a previous
+        // run go inactive once they age past the staleness threshold.
+        this.handler?.noteObservationFailure();
+        this.scheduleDiscoveryRetry();
         return;
       }
     }
 
-    // Stable UUID — preserved from v1.5 so existing HomeKit room assignments
-    // and automations survive the upgrade.
-    const uuid = this.api.hap.uuid.generate('noaa-weather-unique');
     let accessory = this.accessories.get(uuid);
-
-    if (accessory) {
-      this.log.info('Restoring NOAA Weather accessory from cache.');
-    } else {
+    if (!accessory) {
       accessory = new this.api.platformAccessory('NOAA Weather', uuid);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.set(uuid, accessory);
       this.log.info('Created new NOAA Weather accessory.');
     }
 
-    const handler = new NOAAWeatherAccessory(this, accessory, PLUGIN_VERSION);
-    this.startPolling(stationId, handler, cfg.baseRefreshMs, cfg.adaptivePolling);
+    if (!this.handler) {
+      this.handler = new NOAAWeatherAccessory(this, accessory, PLUGIN_VERSION);
+    }
+    this.startPolling(stationId, this.handler, cfg.baseRefreshMs, cfg.adaptivePolling);
 
     for (const [cachedUuid, cached] of this.accessories) {
       if (cachedUuid !== uuid) {
@@ -255,6 +281,30 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         this.accessories.delete(cachedUuid);
       }
     }
+  }
+
+  /**
+   * Station discovery commonly fails at boot when Homebridge starts before
+   * the network is fully up (a Pi and its router rebooting together after a
+   * power outage). The HTTP client's internal retries only span about a
+   * minute, so instead of staying dead until a manual restart, re-run
+   * discovery on a doubling backoff, forever. The timer is unref()'d and
+   * tracked in this.timers so it never blocks or survives shutdown.
+   */
+  private scheduleDiscoveryRetry(): void {
+    const delayMs = withJitter(this.discoveryRetryMs);
+    this.discoveryRetryMs = Math.min(this.discoveryRetryMs * 2, DISCOVERY_RETRY_MAX_MS);
+    this.log.warn(
+      `Station discovery failed; retrying in ${Math.round(delayMs / 1000)}s.`,
+    );
+    const t = setTimeout(() => {
+      this.timers.delete(t);
+      this.discoverDevices().catch((err) => {
+        this.log.error('Unhandled error in discovery retry:', err);
+      });
+    }, delayMs);
+    t.unref();
+    this.timers.add(t);
   }
 
   private async discoverStation(
@@ -336,7 +386,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
           1 + Math.floor(unchangedStreak / ADAPTIVE_GROW_AFTER_UNCHANGED),
         );
       }
-      const delay = baseRefreshMs * mult;
+      const delay = withJitter(baseRefreshMs * mult);
       const t = setTimeout(() => {
         this.timers.delete(t);
         // eslint-disable-next-line @typescript-eslint/no-use-before-define
@@ -357,6 +407,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       } catch (err) {
         this.log.error('NOAA observation fetch failed:', (err as Error).message);
         unchangedStreak = 0;
+        // Failed polls never reach applyReading, so staleness must be
+        // re-evaluated here or an extended outage leaves sensors active.
+        handler.noteObservationFailure();
       } finally {
         inFlight = false;
         scheduleNext();
@@ -386,7 +439,12 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       `humidity=${humidity ?? 'n/a'}% conditions=${conditions}`,
     );
 
-    return handler.applyReading({ temperature: tempC, humidity });
+    const observedMs = props.timestamp ? Date.parse(props.timestamp) : NaN;
+    return handler.applyReading({
+      temperature: tempC,
+      humidity,
+      observedAt: Number.isFinite(observedMs) ? observedMs : null,
+    });
   }
 
   /** Convert NWS QuantitativeValue to °C, honoring unitCode and QC flag. */
@@ -399,7 +457,17 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       return null;
     }
     const unit = (qv.unitCode ?? '').toLowerCase();
-    if (unit.endsWith('degc') || unit === '') {
+    if (unit === '') {
+      // NWS always sends wmoUnit:degC in practice; a missing unitCode is a
+      // station anomaly. Assume Celsius but leave a trace (once) so a
+      // misbehaving station is diagnosable rather than invisible.
+      if (!this.assumedCelsiusLogged) {
+        this.assumedCelsiusLogged = true;
+        this.log.debug('Temperature reading has no unitCode; assuming Celsius.');
+      }
+      return qv.value;
+    }
+    if (unit.endsWith('degc')) {
       return qv.value;
     }
     if (unit.endsWith('degf')) {
