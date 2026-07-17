@@ -42,6 +42,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Last gate before publish: nothing ships without the unit suite
+      # passing in the same environment that built the tarball.
+      - name: Unit tests
+        run: npm test
+
       # Trusted publishing requires npm CLI >= 11.5.1; Node 22 bundles an
       # older version. Pinned to an exact version (like every action above)
       # so a compromised npm release cannot inject code into the publish
