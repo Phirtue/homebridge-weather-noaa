@@ -22,9 +22,20 @@ function clampTemperature(value: number): number {
   return Math.max(TEMP_MIN_C, Math.min(TEMP_MAX_C, value));
 }
 
+/**
+ * Observations older than this are treated as stale and the sensors are
+ * marked inactive. NWS stations typically report hourly and QC processing
+ * can add up to 20 minutes; two hours of silence means the station is dark
+ * (AWOS sites do this routinely) and HomeKit should not present the last
+ * reading as current.
+ */
+const STALE_OBSERVATION_MS = 2 * 60 * 60 * 1000;
+
 interface WeatherReading {
   temperature: number | null;
   humidity: number | null;
+  /** Epoch ms of the observation itself, or null when NWS omits the timestamp. */
+  observedAt?: number | null;
 }
 
 export class NOAAWeatherAccessory {
@@ -32,6 +43,7 @@ export class NOAAWeatherAccessory {
   private readonly humidityService: Service;
   private readonly cacheFile: string;
   private last: WeatherReading = { temperature: null, humidity: null };
+  private statusActive = true;
 
   constructor(
     private readonly platform: NOAAWeatherPlatform,
@@ -75,10 +87,37 @@ export class NOAAWeatherAccessory {
       );
     }
 
+    // Cached readings carry no observation timestamp, so staleness cannot
+    // be judged at boot. Start active; the first live poll (within a
+    // minute) settles it.
+    this.update(this.temperatureService, this.platform.Characteristic.StatusActive, true);
+    this.update(this.humidityService, this.platform.Characteristic.StatusActive, true);
+
     this.platform.log.info(
       'Initialized HomeKit with cached NOAA readings: ' +
       `temp=${this.last.temperature ?? 'n/a'}°C humidity=${this.last.humidity ?? 'n/a'}%`,
     );
+  }
+
+  /**
+   * Mark both sensors active or inactive in HomeKit. A dark station keeps
+   * returning its last observation; without this, automations keyed off
+   * outdoor temperature would act on week-old data presented as current.
+   */
+  private setStatusActive(active: boolean): void {
+    if (active === this.statusActive) {
+      return;
+    }
+    this.statusActive = active;
+    if (active) {
+      this.platform.log.info('Station reporting again; sensors marked active.');
+    } else {
+      this.platform.log.warn(
+        'Observation is stale (station may be offline); sensors marked inactive.',
+      );
+    }
+    this.update(this.temperatureService, this.platform.Characteristic.StatusActive, active);
+    this.update(this.humidityService, this.platform.Characteristic.StatusActive, active);
   }
 
   /**
@@ -88,6 +127,10 @@ export class NOAAWeatherAccessory {
    */
   applyReading(reading: WeatherReading): boolean {
     let changed = false;
+
+    if (reading.observedAt !== null && reading.observedAt !== undefined) {
+      this.setStatusActive(Date.now() - reading.observedAt <= STALE_OBSERVATION_MS);
+    }
 
     if (reading.temperature !== null) {
       const temperature = clampTemperature(reading.temperature);
@@ -147,7 +190,7 @@ export class NOAAWeatherAccessory {
   private update(
     service: Service,
     characteristic: Parameters<Service['updateCharacteristic']>[0],
-    value: number,
+    value: number | boolean,
   ): void {
     try {
       service.updateCharacteristic(characteristic, value);

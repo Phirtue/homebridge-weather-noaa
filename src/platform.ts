@@ -421,7 +421,12 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       `humidity=${humidity ?? 'n/a'}% conditions=${conditions}`,
     );
 
-    return handler.applyReading({ temperature: tempC, humidity });
+    const observedMs = props.timestamp ? Date.parse(props.timestamp) : NaN;
+    return handler.applyReading({
+      temperature: tempC,
+      humidity,
+      observedAt: Number.isFinite(observedMs) ? observedMs : null,
+    });
   }
 
   /** Convert NWS QuantitativeValue to °C, honoring unitCode and QC flag. */
