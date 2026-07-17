@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.9.0] - 2026-07-17
+
+Resilience and hardening release based on an external code review. No
+breaking changes and no config changes; existing installs upgrade in
+place.
+
+### Reliability
+
+- **Startup discovery now retries.** If station discovery fails when
+  Homebridge boots (for example after a power outage, when the router
+  and the Homebridge host restart together and the network is not up
+  yet), the plugin no longer stays inactive until a manual restart. It
+  retries discovery on a doubling backoff, from 1 minute up to a
+  15 minute ceiling, indefinitely, and logs each attempt.
+
+### Security & hardening
+
+- **Redirect origin check moved ahead of status handling.** The final
+  post-redirect URL is now validated against `api.weather.gov` before
+  any part of the response is acted on. Previously the check ran only
+  for successful responses, so an off-origin redirect returning 429 or
+  5xx could influence retry timing through its `Retry-After` header.
+  Impact was bounded (waits are capped and no response body was ever
+  trusted), but the invariant is now unconditional.
+- **npm CLI pinned in the publish workflow.** The release job installed
+  `npm@latest` at publish time, the only unpinned code in an otherwise
+  fully SHA-pinned pipeline. It now installs an exact version
+  (`npm@11.17.0`), so a compromised npm release cannot inject code into
+  the publish job.
+
+### Diagnostics
+
+- **Missing unitCode is logged.** A temperature reading without a
+  `unitCode` is still treated as Celsius (matching NWS behavior in
+  practice), but the assumption is now logged once at debug level so a
+  misbehaving station is diagnosable.
+
+---
+
 ## [1.8.0] - 2026-07-16
 
 Compatibility and test-coverage release. No functional changes to the

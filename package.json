@@ -2,7 +2,7 @@
   "name": "homebridge-weather-noaa",
   "displayName": "Homebridge Weather NOAA",
   "type": "module",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Homebridge plugin providing temperature and humidity sensors using the NOAA / NWS API.",
   "main": "dist/index.js",
   "scripts": {

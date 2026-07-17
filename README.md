@@ -13,25 +13,27 @@ Temperature and humidity sensors for HomeKit, powered by the free
 The plugin finds the observation station closest to your coordinates
 automatically, or you can point it at a specific station.
 
-## What's New in v1.8.0
+## What's New in v1.9.0
 
-- **Node.js 26 support.** Installs cleanly on Node 26 with no engine
-  warnings.
-- **Broader CI coverage.** Every release is now tested on five Node
-  versions against Homebridge v1, v2, and the v2 beta, and the runtime
-  test verifies the plugin actually registers and initializes.
+- **Survives offline starts.** If the network is not up when Homebridge
+  boots, station discovery now retries automatically with a doubling
+  backoff instead of staying inactive until a manual restart.
+- **Hardened further.** The redirect origin check now runs before any
+  response handling, and the npm CLI used by the release pipeline is
+  version-pinned like everything else in it.
 
-Recent 1.7.x releases brought Homebridge 2.x support, verifiable npm
-releases with provenance and SBOM, a hardened HTTP client, and a formal
-[security policy](./SECURITY.md). See [CHANGELOG.md](./CHANGELOG.md) for
-full details.
+Recent releases brought Node 26 and Homebridge 2.x support, verifiable
+npm releases with provenance and SBOM, a hardened HTTP client, and a
+formal [security policy](./SECURITY.md). See
+[CHANGELOG.md](./CHANGELOG.md) for full details.
 
 ## Features
 
 - **Zero runtime dependencies.** Built on native `fetch`; the published
   package contains only compiled plugin code.
 - **Automatic station discovery** using the NOAA points and gridpoints
-  APIs, cached for 30 days.
+  APIs, cached for 30 days and retried with backoff when the network is
+  down at boot.
 - **Adaptive polling** that stretches the refresh interval up to 4x when
   readings are stable and snaps back on any change.
 - **Persistent readings.** HomeKit shows the last known values

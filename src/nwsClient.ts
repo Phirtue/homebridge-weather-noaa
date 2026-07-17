@@ -58,8 +58,12 @@ export class NwsClient {
           redirect: 'follow',
         });
 
+        // Validate the post-redirect origin before acting on ANY part of the
+        // response, including status codes and Retry-After headers. An
+        // off-origin server must not be able to influence retry timing.
+        this.assertNwsOrigin(res.url);
+
         if (res.ok) {
-          this.assertNwsOrigin(res.url);
           const text = await this.readBodyCapped(res);
           return JSON.parse(text) as T;
         }
@@ -122,7 +126,8 @@ export class NwsClient {
   /**
    * fetch() follows redirects transparently (the NWS API issues 301s, e.g.
    * for over-precise /points coordinates). Verify the final URL is still on
-   * the NWS origin before trusting the body.
+   * the NWS origin before trusting any part of the response: status code,
+   * headers (Retry-After), or body.
    */
   private assertNwsOrigin(finalUrl: string): void {
     if (!finalUrl) {

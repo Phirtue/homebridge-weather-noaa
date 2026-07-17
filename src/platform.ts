@@ -40,6 +40,14 @@ const ACCEPTABLE_QC = new Set(['V', 'C', 'S', 'G', 'Z']);
 const ADAPTIVE_GROW_AFTER_UNCHANGED = 3;
 const ADAPTIVE_MAX_MULT = 4;
 
+/**
+ * Backoff schedule for retrying station discovery after a startup failure
+ * (e.g. Homebridge boots before the WAN link is up). Doubles from 1 minute
+ * to a 15 minute ceiling and retries indefinitely.
+ */
+const DISCOVERY_RETRY_INITIAL_MS = 60_000;
+const DISCOVERY_RETRY_MAX_MS = 15 * 60_000;
+
 /** Validated plugin configuration; null when required fields are unusable. */
 interface PluginConfig {
   latitude: number;
@@ -85,6 +93,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   private readonly client: NwsClient;
   private readonly timers = new Set<NodeJS.Timeout>();
   private stationCacheResets = 0;
+  private discoveryRetryMs = DISCOVERY_RETRY_INITIAL_MS;
+  private assumedCelsiusLogged = false;
 
   constructor(
     public readonly log: Logging,
@@ -227,6 +237,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     if (!stationId) {
       stationId = await this.discoverStation(cfg.latitude, cfg.longitude, cacheFile);
       if (!stationId) {
+        this.scheduleDiscoveryRetry();
         return;
       }
     }
@@ -255,6 +266,30 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         this.accessories.delete(cachedUuid);
       }
     }
+  }
+
+  /**
+   * Station discovery commonly fails at boot when Homebridge starts before
+   * the network is fully up (a Pi and its router rebooting together after a
+   * power outage). The HTTP client's internal retries only span about a
+   * minute, so instead of staying dead until a manual restart, re-run
+   * discovery on a doubling backoff, forever. The timer is unref()'d and
+   * tracked in this.timers so it never blocks or survives shutdown.
+   */
+  private scheduleDiscoveryRetry(): void {
+    const delayMs = this.discoveryRetryMs;
+    this.discoveryRetryMs = Math.min(this.discoveryRetryMs * 2, DISCOVERY_RETRY_MAX_MS);
+    this.log.warn(
+      `Station discovery failed; retrying in ${Math.round(delayMs / 1000)}s.`,
+    );
+    const t = setTimeout(() => {
+      this.timers.delete(t);
+      this.discoverDevices().catch((err) => {
+        this.log.error('Unhandled error in discovery retry:', err);
+      });
+    }, delayMs);
+    t.unref();
+    this.timers.add(t);
   }
 
   private async discoverStation(
@@ -399,7 +434,17 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       return null;
     }
     const unit = (qv.unitCode ?? '').toLowerCase();
-    if (unit.endsWith('degc') || unit === '') {
+    if (unit === '') {
+      // NWS always sends wmoUnit:degC in practice; a missing unitCode is a
+      // station anomaly. Assume Celsius but leave a trace (once) so a
+      // misbehaving station is diagnosable rather than invisible.
+      if (!this.assumedCelsiusLogged) {
+        this.assumedCelsiusLogged = true;
+        this.log.debug('Temperature reading has no unitCode; assuming Celsius.');
+      }
+      return qv.value;
+    }
+    if (unit.endsWith('degc')) {
       return qv.value;
     }
     if (unit.endsWith('degf')) {
