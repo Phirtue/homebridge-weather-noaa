@@ -124,7 +124,11 @@ export class NOAAWeatherAccessory {
       this.platform.log.debug('Humidity null; retaining last known value.');
     }
 
-    if (this.last.temperature !== null || this.last.humidity !== null) {
+    // Persist only when a value actually changed: identical data is not
+    // worth a write+rename cycle against what is often an SD card. The
+    // in-memory value may lead the persisted one by up to the change
+    // epsilon, which is negligible for a restart cache.
+    if (changed && (this.last.temperature !== null || this.last.humidity !== null)) {
       writeJsonAtomic(this.platform.log, this.cacheFile, this.last);
     }
 
