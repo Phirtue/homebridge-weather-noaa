@@ -100,7 +100,8 @@ export class NwsClient {
           continue;
         }
 
-        this.metrics.apiFailures++;
+        // No apiFailures++ here: the catch below counts this throw, and
+        // incrementing in both places double-counted non-retryable errors.
         throw new Error(`NOAA API ${res.status} ${res.statusText} for ${url}`);
       } catch (err) {
         const isAbort = (err as { name?: string })?.name === 'AbortError';
