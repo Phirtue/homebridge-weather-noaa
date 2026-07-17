@@ -12,7 +12,7 @@ import type {
 import * as path from 'path';
 
 import { NOAAWeatherAccessory } from './platformAccessory.js';
-import { NwsClient, NWS_API_BASE } from './nwsClient.js';
+import { NwsClient, NWS_API_BASE, withJitter } from './nwsClient.js';
 import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './settings.js';
 import { readStationCache, writeJsonAtomic, STATION_ID_RE, PointsCache } from './stationCache.js';
 
@@ -277,7 +277,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
    * tracked in this.timers so it never blocks or survives shutdown.
    */
   private scheduleDiscoveryRetry(): void {
-    const delayMs = this.discoveryRetryMs;
+    const delayMs = withJitter(this.discoveryRetryMs);
     this.discoveryRetryMs = Math.min(this.discoveryRetryMs * 2, DISCOVERY_RETRY_MAX_MS);
     this.log.warn(
       `Station discovery failed; retrying in ${Math.round(delayMs / 1000)}s.`,
@@ -371,7 +371,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
           1 + Math.floor(unchangedStreak / ADAPTIVE_GROW_AFTER_UNCHANGED),
         );
       }
-      const delay = baseRefreshMs * mult;
+      const delay = withJitter(baseRefreshMs * mult);
       const t = setTimeout(() => {
         this.timers.delete(t);
         // eslint-disable-next-line @typescript-eslint/no-use-before-define

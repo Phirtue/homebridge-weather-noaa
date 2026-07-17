@@ -17,6 +17,16 @@ const RETRY_AFTER_CAP_MS = 5 * 60_000;
 const MAX_RETRIES = 4;
 
 /**
+ * Randomize a delay to +/-10% so the whole install base does not retry
+ * (or poll) in lockstep after an NWS outage. Deterministic schedules
+ * synchronize across users because everyone's timer starts at the same
+ * event: the service coming back.
+ */
+export function withJitter(ms: number): number {
+  return Math.round(ms * (0.9 + Math.random() * 0.2));
+}
+
+/**
  * Minimal HTTP client for the NWS API built on native fetch.
  *
  * Responsibilities:
@@ -70,7 +80,7 @@ export class NwsClient {
 
         if (res.status === 429) {
           this.metrics.rateLimitedCount++;
-          const waitMs = this.parseRetryAfter(res.headers.get('retry-after'), backoffMs);
+          const waitMs = withJitter(this.parseRetryAfter(res.headers.get('retry-after'), backoffMs));
           this.log.warn(`NOAA rate-limited (429). Waiting ${(waitMs / 1000).toFixed(1)}s.`);
           await this.sleep(waitMs);
           backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
@@ -84,7 +94,7 @@ export class NwsClient {
           this.log.warn(
             `NOAA ${res.status}; retrying in ${(backoffMs / 1000).toFixed(1)}s.`,
           );
-          await this.sleep(backoffMs);
+          await this.sleep(withJitter(backoffMs));
           backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
           attempt++;
           continue;
@@ -107,7 +117,7 @@ export class NwsClient {
             `Network error (${isAbort ? 'timeout' : (err as Error).message}); ` +
             `retrying in ${(backoffMs / 1000).toFixed(1)}s.`,
           );
-          await this.sleep(backoffMs);
+          await this.sleep(withJitter(backoffMs));
           backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
           attempt++;
           continue;
