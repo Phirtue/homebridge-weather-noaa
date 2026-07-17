@@ -1,8 +1,11 @@
-import type { API, Logging, PlatformConfig } from 'homebridge';
+import type { API, Logging, PlatformAccessory, PlatformConfig } from 'homebridge';
+import * as fs from 'fs';
 import * as os from 'os';
-import { describe, expect, it } from 'vitest';
+import * as path from 'path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NOAAWeatherPlatform } from '../src/platform.js';
+import { NOAAWeatherAccessory } from '../src/platformAccessory.js';
 import { makeFakeLog, FakeLog } from './helpers.js';
 
 function makeFakeApi(): API {
@@ -145,6 +148,67 @@ describe('extractTemperatureC', () => {
   it('returns null for absent values', () => {
     expect(extract(undefined)).toBeNull();
     expect(extract({ value: null })).toBeNull();
+  });
+});
+
+describe('discovery-blocked boot', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('tracks staleness for a restored accessory while discovery keeps failing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
+    try {
+      const chainableService = () => {
+        const svc: Record<string, unknown> = {
+          updateCharacteristic: vi.fn(),
+        };
+        svc.setCharacteristic = vi.fn(() => svc);
+        return svc;
+      };
+      const restoredAccessory = {
+        UUID: 'uuid-noaa-weather-unique',
+        displayName: 'NOAA Weather',
+        getService: vi.fn(() => chainableService()),
+        getServiceById: vi.fn(() => chainableService()),
+        addService: vi.fn(() => chainableService()),
+      } as unknown as PlatformAccessory;
+
+      const api = {
+        hap: {
+          Service: {},
+          Characteristic: {},
+          uuid: { generate: (s: string) => `uuid-${s}` },
+        },
+        on: () => undefined,
+        user: { persistPath: () => dir },
+      } as unknown as API;
+
+      // Non-network error: the client fails fast without backoff sleeps.
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        throw new Error('discovery unavailable');
+      }));
+      const noteFailure = vi.spyOn(NOAAWeatherAccessory.prototype, 'noteObservationFailure');
+
+      const log = makeFakeLog();
+      const platform = new NOAAWeatherPlatform(
+        log as Logging,
+        { platform: 'NOAAWeather', ...VALID } as PlatformConfig,
+        api,
+      );
+      platform.configureAccessory(restoredAccessory);
+
+      await (platform as unknown as { discoverDevices(): Promise<void> }).discoverDevices();
+
+      // The handler exists before discovery ever succeeds, and the failure
+      // path evaluates staleness on it instead of leaving it untracked.
+      expect(noteFailure).toHaveBeenCalledTimes(1);
+      expect(log.messages.some((m) => m.includes('Restoring NOAA Weather accessory'))).toBe(true);
+      expect(log.messages.some((m) => m.includes('Station discovery failed; retrying'))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

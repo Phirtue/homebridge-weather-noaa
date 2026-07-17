@@ -95,6 +95,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   private stationCacheResets = 0;
   private discoveryRetryMs = DISCOVERY_RETRY_INITIAL_MS;
   private assumedCelsiusLogged = false;
+  private handler: NOAAWeatherAccessory | null = null;
 
   constructor(
     public readonly log: Logging,
@@ -223,6 +224,21 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     }
     const cacheFile = path.join(this.api.user.persistPath(), 'noaa-points-cache.json');
 
+    // Stable UUID — preserved from v1.5 so existing HomeKit room assignments
+    // and automations survive the upgrade.
+    const uuid = this.api.hap.uuid.generate('noaa-weather-unique');
+
+    // If HomeKit already knows this accessory from a previous run, attach
+    // the handler before station resolution: HomeKit is already presenting
+    // the old readings, so staleness must be tracked even while discovery
+    // keeps failing. On a first run there is nothing in HomeKit to go
+    // stale, and the accessory is only created after discovery succeeds.
+    const restored = this.accessories.get(uuid);
+    if (restored && !this.handler) {
+      this.log.info('Restoring NOAA Weather accessory from cache.');
+      this.handler = new NOAAWeatherAccessory(this, restored, PLUGIN_VERSION);
+    }
+
     let stationId = cfg.stationId;
     if (stationId) {
       this.log.info(`Using manually configured NOAA station: ${stationId}`);
@@ -237,27 +253,26 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     if (!stationId) {
       stationId = await this.discoverStation(cfg.latitude, cfg.longitude, cacheFile);
       if (!stationId) {
+        // Same clock as failed polls: readings restored from a previous
+        // run go inactive once they age past the staleness threshold.
+        this.handler?.noteObservationFailure();
         this.scheduleDiscoveryRetry();
         return;
       }
     }
 
-    // Stable UUID — preserved from v1.5 so existing HomeKit room assignments
-    // and automations survive the upgrade.
-    const uuid = this.api.hap.uuid.generate('noaa-weather-unique');
     let accessory = this.accessories.get(uuid);
-
-    if (accessory) {
-      this.log.info('Restoring NOAA Weather accessory from cache.');
-    } else {
+    if (!accessory) {
       accessory = new this.api.platformAccessory('NOAA Weather', uuid);
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       this.accessories.set(uuid, accessory);
       this.log.info('Created new NOAA Weather accessory.');
     }
 
-    const handler = new NOAAWeatherAccessory(this, accessory, PLUGIN_VERSION);
-    this.startPolling(stationId, handler, cfg.baseRefreshMs, cfg.adaptivePolling);
+    if (!this.handler) {
+      this.handler = new NOAAWeatherAccessory(this, accessory, PLUGIN_VERSION);
+    }
+    this.startPolling(stationId, this.handler, cfg.baseRefreshMs, cfg.adaptivePolling);
 
     for (const [cachedUuid, cached] of this.accessories) {
       if (cachedUuid !== uuid) {
