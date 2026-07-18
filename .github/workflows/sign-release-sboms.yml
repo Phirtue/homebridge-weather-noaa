@@ -1,0 +1,54 @@
+name: Backfill SBOM signatures
+
+# One-off, manually triggered: attaches Sigstore keyless signatures to the
+# SBOMs of releases published before the publish workflow signed them
+# (v1.7.0 through v1.9.0). A signature is a present-tense claim about
+# bytes — "this workflow attests these are the published SBOMs" — so
+# adding one retroactively is truthful. Build provenance is deliberately
+# NOT backfilled: provenance claims how and from what commit an artifact
+# was built, and generating it after the fact would be false metadata.
+#
+# Idempotent: releases without an SBOM or already signed are skipped.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload signature bundles to releases
+      id-token: write # Sigstore keyless signing via GitHub OIDC
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@df199fb7be9f65074067a9eb93f12bb4c5547cf2 # v2.13.3
+        with:
+          egress-policy: audit
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign unsigned release SBOMs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for tag in $(gh release list --limit 100 --json tagName -q '.[].tagName'); do
+            assets=$(gh release view "$tag" --json assets -q '.assets[].name')
+            if ! grep -qx 'sbom.cdx.json' <<< "$assets"; then
+              echo "$tag: no SBOM asset, skipping"
+              continue
+            fi
+            if grep -qx 'sbom.cdx.json.sigstore.json' <<< "$assets"; then
+              echo "$tag: already signed, skipping"
+              continue
+            fi
+            rm -f sbom.cdx.json sbom.cdx.json.sigstore.json
+            gh release download "$tag" --pattern sbom.cdx.json
+            cosign sign-blob --yes --bundle sbom.cdx.json.sigstore.json sbom.cdx.json
+            gh release upload "$tag" sbom.cdx.json.sigstore.json
+            echo "$tag: signature attached"
+          done
