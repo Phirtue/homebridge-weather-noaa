@@ -21,6 +21,21 @@ jobs:
       actions: read
 
     steps:
+      # Block-mode egress control: any outbound connection not on this list
+      # is refused. If a compromised action tried to exfiltrate the token,
+      # the connection would fail and be flagged. CodeQL's endpoints are
+      # stable and well-known, so block mode is safe here.
+      - name: Harden runner
+        uses: step-security/harden-runner@df199fb7be9f65074067a9eb93f12bb4c5547cf2 # v2.13.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            uploads.github.com:443
+
       # Actions pinned to commit SHAs so a compromised tag cannot inject code.
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
