@@ -11,6 +11,8 @@ on:
     branches: [main]
   # Re-run when branch protection settings change, since Scorecard scores them.
   branch_protection_rule:
+  # Manual re-runs, e.g. after changing release assets or repo settings.
+  workflow_dispatch:
 
 permissions: read-all
 
