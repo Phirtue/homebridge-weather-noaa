@@ -8,13 +8,17 @@ on:
   release:
     types: [published]
 
+# Read-only at the top level; write grants live on the job that needs
+# them, so a job added later cannot inherit them by accident.
 permissions:
-  contents: write # attach the SBOM to the GitHub release
-  id-token: write # OIDC token for npm provenance attestation
+  contents: read
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # attach the SBOM to the GitHub release
+      id-token: write # OIDC token for npm provenance attestation
     steps:
       # Actions pinned to commit SHAs so a compromised tag cannot inject code.
       - name: Checkout code
