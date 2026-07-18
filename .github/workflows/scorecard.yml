@@ -23,6 +23,28 @@ jobs:
       id-token: write # publish results to the Scorecard REST API for the badge
 
     steps:
+      # Block-mode egress control. Scorecard queries a fixed set of
+      # services: GitHub, OSV and deps.dev for vulnerability data, the
+      # Best Practices badge API, Sigstore (to sign published results),
+      # and the Scorecard REST API. Endpoint list per StepSecurity's
+      # published policy for scorecard workflows.
+      - name: Harden runner
+        uses: step-security/harden-runner@df199fb7be9f65074067a9eb93f12bb4c5547cf2 # v2.13.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.deps.dev:443
+            api.github.com:443
+            api.osv.dev:443
+            api.scorecard.dev:443
+            api.securityscorecards.dev:443
+            fulcio.sigstore.dev:443
+            github.com:443
+            oauth2.sigstore.dev:443
+            rekor.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            www.bestpractices.dev:443
+
       # Actions pinned to commit SHAs so a compromised tag cannot inject code.
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3

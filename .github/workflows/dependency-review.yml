@@ -13,6 +13,16 @@ jobs:
   dependency-review:
     runs-on: ubuntu-latest
     steps:
+      # Block-mode egress control: this job only needs the GitHub API
+      # (advisory database queries), so anything else is refused.
+      - name: Harden runner
+        uses: step-security/harden-runner@df199fb7be9f65074067a9eb93f12bb4c5547cf2 # v2.13.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+
       # Actions pinned to commit SHAs so a compromised tag cannot inject code.
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
