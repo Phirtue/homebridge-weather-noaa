@@ -30,19 +30,19 @@ jobs:
       # egress allowlist here would break releases. Tighten to block mode
       # once a few release runs confirm the endpoint list.
       - name: Harden runner
-        uses: step-security/harden-runner@df199fb7be9f65074067a9eb93f12bb4c5547cf2 # v2.13.3
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
       # Actions pinned to commit SHAs so a compromised tag cannot inject code.
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # Node 24 bundles npm >= 11.16, which satisfies the npm >= 11.5.1
       # floor for trusted publishing, so no separate npm upgrade (which
       # would be an unpinned install at release time) is needed.
       - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
