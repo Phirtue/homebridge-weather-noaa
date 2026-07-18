@@ -16,7 +16,7 @@ jobs:
       # Block-mode egress control: this job only needs the GitHub API
       # (advisory database queries), so anything else is refused.
       - name: Harden runner
-        uses: step-security/harden-runner@df199fb7be9f65074067a9eb93f12bb4c5547cf2 # v2.13.3
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: block
           allowed-endpoints: >

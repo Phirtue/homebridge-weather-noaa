@@ -28,7 +28,7 @@ jobs:
       # job legitimately reaches npm and the live NWS API, so the endpoint
       # list is broad; tighten to block mode once audit logs confirm it.
       - name: Harden runner
-        uses: step-security/harden-runner@df199fb7be9f65074067a9eb93f12bb4c5547cf2 # v2.13.3
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
