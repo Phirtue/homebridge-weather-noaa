@@ -1,6 +1,6 @@
 # Homebridge NOAA Weather Plugin
 
-[![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=for-the-badge&logoColor=%23FFFFFF&logo=homebridge)](https://github.com/homebridge/homebridge/wiki/Verified-Plugins)
+[![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=for-the-badge&logoColor=%23FFFFFF&logo=homebridge)](https://github.com/homebridge/plugins/wiki/Verified-Plugins)
 
 [![CI Build](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/ci.yml/badge.svg)](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/codeql.yml/badge.svg)](https://github.com/Phirtue/homebridge-weather-noaa/actions/workflows/codeql.yml)
