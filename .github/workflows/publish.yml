@@ -24,10 +24,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
+      # Node 24 bundles npm >= 11.16, which satisfies the npm >= 11.5.1
+      # floor for trusted publishing, so no separate npm upgrade (which
+      # would be an unpinned install at release time) is needed.
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       # Reject lockfile entries that resolve anywhere other than the npm
@@ -51,12 +54,12 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      # Trusted publishing requires npm CLI >= 11.5.1; Node 22 bundles an
-      # older version. Pinned to an exact version (like every action above)
-      # so a compromised npm release cannot inject code into the publish
-      # job at release time. Bump the pin deliberately when updating.
-      - name: Update npm for trusted publishing
-        run: npm install -g npm@11.17.0
+      # Guard the trusted-publishing floor explicitly, since it now relies
+      # on the npm bundled with the Node version above.
+      - name: Verify npm supports trusted publishing
+        run: |
+          npm --version
+          node -e "const [maj, min, pat] = require('child_process').execSync('npm --version').toString().trim().split('.').map(Number); if (maj < 11 || (maj === 11 && (min < 5 || (min === 5 && pat < 1)))) { console.error('npm >= 11.5.1 required for trusted publishing'); process.exit(1); }"
 
       # --provenance links the published tarball to this exact commit and
       # workflow run via a Sigstore attestation shown on npmjs.com.

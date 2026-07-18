@@ -38,17 +38,15 @@ jobs:
         run: npx lockfile-lint@5.0.0 --path package-lock.json --allowed-hosts npm --validate-https
 
       # --ignore-scripts keeps dev-dependency lifecycle scripts from running;
-      # lint and build are invoked explicitly below.
+      # lint and build are invoked explicitly below. npm ci only: the
+      # lockfile is committed, and installs must be pinned through it.
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci --ignore-scripts
-          else
-            npm install --ignore-scripts
-          fi
+        run: npm ci --ignore-scripts
 
       # No fallback: silently substituting another Homebridge version would
       # let a matrix cell report green without testing what it claims to.
+      # Deliberately not hash-pinned (Scorecard flags this): floating specs
+      # like ^1 / latest / beta are the point of the compatibility matrix.
       - name: Install Homebridge version ${{ matrix.homebridge-version }}
         run: npm install --no-save --ignore-scripts "homebridge@${{ matrix.homebridge-version }}"
 
