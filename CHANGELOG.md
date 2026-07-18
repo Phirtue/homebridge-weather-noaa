@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.9.1] - 2026-07-17
+
+Documentation and release-infrastructure patch. The plugin code is
+identical to 1.9.0; no config changes, existing installs upgrade in
+place.
+
+### Release verifiability
+
+- **Signed releases.** The SBOM attached to each GitHub release now
+  carries a Sigstore keyless signature, and signatures were backfilled
+  onto all prior releases with SBOMs (v1.7.0 through v1.9.0).
+- **SLSA build provenance.** Starting with this release, an isolated
+  OpenSSF builder generates signed provenance (`.intoto.jsonl`)
+  attesting exactly which commit and workflow produced the npm tarball
+  and SBOM, both of which are attached to the release. Verifiable with
+  `slsa-verifier`.
+
+### Security posture
+
+- **OpenSSF Best Practices badge (passing).** The project now holds the
+  badge and displays it in the README alongside the Scorecard badge.
+- **CI egress control.** Every workflow starts with StepSecurity
+  harden-runner; the static workflows (CodeQL, dependency review,
+  Scorecard) run in block mode with explicit endpoint allowlists.
+- **Property-based tests.** A fast-check suite (11 properties, suite
+  now 67 tests) fuzzes the network-facing parsing surfaces: Retry-After
+  handling can never produce an unbounded wait, unit conversions never
+  yield NaN, and station IDs accepted by validation are URL-inert.
+
+### Housekeeping
+
+- The verified-by-homebridge badge links to the new plugin directory
+  location (homebridge/plugins wiki).
+- The CI runtime test port moved out of the Linux ephemeral range,
+  eliminating a rare EADDRINUSE flake.
+- GitHub Actions bumped to current releases (checkout v7, setup-node
+  v7, dependency-review v5, harden-runner v2.20), SHA-pinned as always.
+
 ## [1.9.0] - 2026-07-17
 
 Resilience, testing, and hardening release based on two rounds of
