@@ -80,6 +80,13 @@ jobs:
           }
           console.log('Plugin metadata check passed');"
 
+      # The bridge port must sit BELOW Linux's ephemeral range (32768-60999).
+      # The plugin's own startup fetch to api.weather.gov opens outbound
+      # connections concurrently with the HAP bind; when one of them got
+      # kernel-assigned source port 51826 (Homebridge's default, inside the
+      # ephemeral range), the bind failed with EADDRINUSE and the cell
+      # flaked. A sub-32768 port can never be handed out as an ephemeral
+      # source port, making the collision impossible rather than rare.
       - name: Runtime Test (Start Homebridge with Plugin)
         run: |
           mkdir -p ./homebridge-test
@@ -88,7 +95,7 @@ jobs:
             "bridge": {
               "name": "HomebridgeTest",
               "username": "0E:22:D3:AE:AC:42",
-              "port": 51826,
+              "port": 24242,
               "pin": "031-45-154"
             },
             "platforms": [
