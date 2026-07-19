@@ -41,6 +41,18 @@ const ADAPTIVE_GROW_AFTER_UNCHANGED = 3;
 const ADAPTIVE_MAX_MULT = 4;
 
 /**
+ * Refresh interval bounds in minutes. The floor protects the free NWS API;
+ * the ceiling matches config.schema.json, which only binds through the
+ * Homebridge UI — a hand-edited config.json can hold any finite number.
+ * Without the ceiling, baseRefreshMs * ADAPTIVE_MAX_MULT could exceed
+ * Node's 2^31-1 ms setTimeout limit, which Node clamps to 1 ms: the
+ * failure mode would be a continuous request loop, the exact inverse of
+ * the configured intent.
+ */
+const REFRESH_MIN_MINUTES = 5;
+const REFRESH_MAX_MINUTES = 1440;
+
+/**
  * Backoff schedule for retrying station discovery after a startup failure
  * (e.g. Homebridge boots before the WAN link is up). Doubles from 1 minute
  * to a 15 minute ceiling and retries indefinitely.
@@ -96,6 +108,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   private discoveryRetryMs = DISCOVERY_RETRY_INITIAL_MS;
   private assumedCelsiusLogged = false;
   private handler: NOAAWeatherAccessory | null = null;
+  private pollingStarted = false;
 
   constructor(
     public readonly log: Logging,
@@ -161,7 +174,16 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       return null;
     }
 
-    const refreshMinutes = Math.max(5, toNumber(raw.refreshInterval) ?? 15);
+    const requestedMinutes = toNumber(raw.refreshInterval) ?? 15;
+    const refreshMinutes = Math.min(
+      REFRESH_MAX_MINUTES, Math.max(REFRESH_MIN_MINUTES, requestedMinutes),
+    );
+    if (refreshMinutes !== requestedMinutes) {
+      this.log.warn(
+        `refreshInterval ${requestedMinutes} is outside ` +
+        `${REFRESH_MIN_MINUTES}-${REFRESH_MAX_MINUTES} minutes; using ${refreshMinutes}.`,
+      );
+    }
 
     let adaptivePolling = true;
     if (typeof raw.adaptivePolling === 'boolean') {
@@ -176,8 +198,12 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       if (STATION_ID_RE.test(upper)) {
         stationId = upper;
       } else {
+        // Echo the rejected value with CR/LF stripped and length-capped
+        // (same convention as buildUserAgent) so a hostile config value
+        // cannot fabricate lines in the Homebridge log.
+        const shown = raw.stationId.replace(/[\r\n]/g, '').slice(0, 32);
         this.log.warn(
-          `Configured stationId "${raw.stationId}" is invalid (expected 3-8 alphanumerics). ` +
+          `Configured stationId "${shown}" is invalid (expected 3-8 alphanumerics). ` +
           'Falling back to auto-discovery.',
         );
       }
@@ -342,12 +368,11 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         .map((f) => f?.properties?.stationIdentifier)
         .filter((id): id is string => typeof id === 'string' && STATION_ID_RE.test(id));
 
-      if (candidates.length === 0) {
+      const stationId = candidates[0];
+      if (!stationId) {
         this.log.error('No valid NOAA stations found for grid cell.');
         return null;
       }
-
-      const stationId = candidates[0];
       this.log.info(`Station candidates: ${candidates.slice(0, 10).join(', ')}`);
       this.log.info(`Selected NOAA station: ${stationId}`);
 
@@ -375,6 +400,17 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     baseRefreshMs: number,
     adaptive: boolean,
   ): void {
+    // Only one timer chain may exist. Today this cannot trigger
+    // (didFinishLaunching fires once and discovery retries stop after
+    // success), but a second chain's first colliding tick would hit the
+    // inFlight guard below and die without rescheduling — a silent
+    // landmine for future refactors, so the invariant is enforced here.
+    if (this.pollingStarted) {
+      this.log.debug('startPolling called again; ignoring (already polling).');
+      return;
+    }
+    this.pollingStarted = true;
+
     let unchangedStreak = 0;
     let inFlight = false;
 
@@ -406,8 +442,11 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         unchangedStreak = changed ? 0 : unchangedStreak + 1;
       } catch (err) {
         this.log.error('NOAA observation fetch failed:', (err as Error).message);
-        unchangedStreak = 0;
-        // Failed polls never reach applyReading, so staleness must be
+        // A failed poll is not a value change: leave the adaptive streak
+        // alone. Resetting it here snapped a relaxed schedule back to the
+        // fastest polling rate for the entire duration of an NWS outage —
+        // maximum load aimed at a service that is already struggling.
+        // Failed polls also never reach applyReading, so staleness must be
         // re-evaluated here or an extended outage leaves sensors active.
         handler.noteObservationFailure();
       } finally {

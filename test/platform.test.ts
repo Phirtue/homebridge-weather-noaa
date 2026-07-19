@@ -79,6 +79,25 @@ describe('parseConfig', () => {
     expect(cfg.baseRefreshMs).toBe(5 * 60 * 1000);
   });
 
+  it('clamps refreshInterval to the 1440 minute ceiling and warns', () => {
+    // Values above ~8948 minutes would overflow Node's 32-bit setTimeout
+    // limit under the 4x adaptive multiplier and poll continuously.
+    const { platform, log } = makePlatform({ ...VALID, refreshInterval: 100_000 });
+    const cfg = invoke<{ baseRefreshMs: number }>(platform, 'parseConfig');
+    expect(cfg.baseRefreshMs).toBe(1440 * 60 * 1000);
+    expect(log.messages.some((m) => m.includes('outside 5-1440'))).toBe(true);
+  });
+
+  it('strips CR/LF from a rejected stationId before echoing it to the log', () => {
+    const { platform, log } = makePlatform({ ...VALID, stationId: 'AB\nFAKE-LOG-LINE' });
+    expect(invoke<{ stationId: string | null }>(platform, 'parseConfig').stationId)
+      .toBeNull();
+    const warned = log.messages.find((m) => m.includes('is invalid'));
+    expect(warned).toBeDefined();
+    expect(warned).not.toMatch(/[\r\n]/);
+    expect(log.messages.some((m) => m.includes('Falling back to auto-discovery'))).toBe(true);
+  });
+
   it('normalizes a valid stationId and rejects an invalid one', () => {
     const ok = makePlatform({ ...VALID, stationId: ' ksea ' });
     expect(invoke<{ stationId: string }>(ok.platform, 'parseConfig').stationId).toBe('KSEA');
@@ -209,6 +228,78 @@ describe('discovery-blocked boot', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('startPolling', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  // Minimal handler stand-in: startPolling only calls these two methods.
+  const makeHandler = (applyResult = false) => ({
+    applyReading: vi.fn(() => applyResult),
+    noteObservationFailure: vi.fn(),
+  }) as unknown as NOAAWeatherAccessory;
+
+  const OBSERVATION_URL_BODY = JSON.stringify({ properties: {} });
+  const BASE_MS = 5 * 60 * 1000;
+
+  it('ignores a second invocation so only one timer chain can exist', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () =>
+      new Response(OBSERVATION_URL_BODY, { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform, log } = makePlatform(VALID);
+    const handler = makeHandler();
+
+    invoke(platform, 'startPolling', 'KSEA', handler, BASE_MS, false);
+    invoke(platform, 'startPolling', 'KSEA', handler, BASE_MS, false);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(log.messages.some((m) => m.includes('already polling'))).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // one initial tick, not two
+
+    // One base interval (+10% jitter margin) later: exactly one more poll.
+    await vi.advanceTimersByTimeAsync(BASE_MS * 1.1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the relaxed adaptive schedule when a poll fails', async () => {
+    vi.useFakeTimers();
+    let fail = false;
+    const fetchMock = vi.fn(async () => {
+      if (fail) {
+        // Non-network error: fetchJson fails fast without backoff sleeps.
+        throw new Error('outage');
+      }
+      return new Response(OBSERVATION_URL_BODY, { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+    const handler = makeHandler(false); // every reading "unchanged"
+
+    invoke(platform, 'startPolling', 'KSEA', handler, BASE_MS, true);
+    await vi.advanceTimersByTimeAsync(0); // tick 1: streak 1
+    await vi.advanceTimersByTimeAsync(BASE_MS * 1.1); // tick 2: streak 2
+    await vi.advanceTimersByTimeAsync(BASE_MS * 1.1); // tick 3: streak 3 -> mult 2
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    fail = true;
+    await vi.advanceTimersByTimeAsync(2 * BASE_MS * 1.1); // tick 4 fails
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect((handler as unknown as { noteObservationFailure: ReturnType<typeof vi.fn> })
+      .noteObservationFailure).toHaveBeenCalledTimes(1);
+
+    // The failure must NOT reset the streak: the next poll still runs on
+    // the doubled interval (>= 2 * BASE * 0.9), not the base one.
+    await vi.advanceTimersByTimeAsync(BASE_MS * 1.1);
+    expect(fetchMock).toHaveBeenCalledTimes(4); // too early for mult=2
+    await vi.advanceTimersByTimeAsync(BASE_MS * 1.1);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 });
 

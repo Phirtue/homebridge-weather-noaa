@@ -107,6 +107,25 @@ describe('parseRetryAfter properties', () => {
   });
 });
 
+describe('parseConfig refresh bound properties', () => {
+  const platform = makePlatform();
+  const SET_TIMEOUT_MAX_MS = 2_147_483_647;
+  const ADAPTIVE_MAX_MULT = 4;
+
+  it('keeps the worst-case adaptive delay under the setTimeout limit for any finite input', () => {
+    // Node clamps setTimeout delays above 2^31-1 ms to 1 ms, so an
+    // unbounded refreshInterval would invert into continuous polling.
+    fc.assert(
+      fc.property(finiteDouble(-1e15, 1e15), (minutes) => {
+        (platform.config as Record<string, unknown>).refreshInterval = minutes;
+        const cfg = invoke<{ baseRefreshMs: number }>(platform, 'parseConfig');
+        expect(cfg.baseRefreshMs).toBeGreaterThanOrEqual(5 * 60 * 1000);
+        expect(cfg.baseRefreshMs * ADAPTIVE_MAX_MULT).toBeLessThan(SET_TIMEOUT_MAX_MS);
+      }),
+    );
+  });
+});
+
 describe('extractTemperatureC properties', () => {
   const platform = makePlatform();
   const extract = (qv: unknown): number | null =>
