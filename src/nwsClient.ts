@@ -71,7 +71,13 @@ export class NwsClient {
         // Validate the post-redirect origin before acting on ANY part of the
         // response, including status codes and Retry-After headers. An
         // off-origin server must not be able to influence retry timing.
-        this.assertNwsOrigin(res.url);
+        // Its body is never read; discard it so the stream is released.
+        try {
+          this.assertNwsOrigin(res.url);
+        } catch (originErr) {
+          this.discardBody(res);
+          throw originErr;
+        }
 
         if (res.ok) {
           const text = await this.readBodyCapped(res);
@@ -79,7 +85,11 @@ export class NwsClient {
         }
 
         if (res.status === 429) {
+          this.discardBody(res);
           this.metrics.rateLimitedCount++;
+          if (attempt >= MAX_RETRIES) {
+            break; // exhausted: throw below rather than sleep a backoff first
+          }
           const waitMs = withJitter(this.parseRetryAfter(res.headers.get('retry-after'), backoffMs));
           this.log.warn(`NOAA rate-limited (429). Waiting ${(waitMs / 1000).toFixed(1)}s.`);
           await this.sleep(waitMs);
@@ -90,6 +100,10 @@ export class NwsClient {
         }
 
         if (res.status >= 500 && res.status <= 599) {
+          this.discardBody(res);
+          if (attempt >= MAX_RETRIES) {
+            break; // exhausted: throw below rather than sleep a backoff first
+          }
           this.metrics.retryCount++;
           this.log.warn(
             `NOAA ${res.status}; retrying in ${(backoffMs / 1000).toFixed(1)}s.`,
@@ -102,6 +116,7 @@ export class NwsClient {
 
         // No apiFailures++ here: the catch below counts this throw, and
         // incrementing in both places double-counted non-retryable errors.
+        this.discardBody(res);
         throw new Error(`NOAA API ${res.status} ${res.statusText} for ${url}`);
       } catch (err) {
         const isAbort = (err as { name?: string })?.name === 'AbortError';
@@ -131,6 +146,10 @@ export class NwsClient {
       }
     }
 
+    // This throw is outside the try/catch, so the catch block's counter
+    // never sees it; count it here or exhausted 429/5xx sequences would
+    // appear in retryCount but not apiFailures.
+    this.metrics.apiFailures++;
     throw new Error(`NOAA API: exhausted ${MAX_RETRIES} retries for ${url}`);
   }
 
@@ -139,6 +158,12 @@ export class NwsClient {
    * for over-precise /points coordinates). Verify the final URL is still on
    * the NWS origin before trusting any part of the response: status code,
    * headers (Retry-After), or body.
+   *
+   * NOTE: redirects are followed before this check runs, so an off-origin
+   * target has already received the request (headers included) by the time
+   * the response is rejected. Acceptable today because requests carry no
+   * secrets — if any credential is ever added to request headers, switch to
+   * redirect: 'manual' and validate the Location target BEFORE re-issuing.
    */
   private assertNwsOrigin(finalUrl: string): void {
     if (!finalUrl) {
@@ -147,6 +172,16 @@ export class NwsClient {
     if (new URL(finalUrl).origin !== new URL(NWS_API_BASE).origin) {
       throw new Error(`Redirected off NWS origin to ${finalUrl}`);
     }
+  }
+
+  /**
+   * Non-OK responses are acted on via status/headers only; cancel the body
+   * so undici can release the stream and reuse the connection instead of
+   * holding both until GC. cancel() on a locked or errored stream rejects
+   * rather than throwing, so the swallow below covers every case.
+   */
+  private discardBody(res: Response): void {
+    void res.body?.cancel().catch(() => { /* ignore */ });
   }
 
   /**
