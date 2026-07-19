@@ -1,5 +1,57 @@
 # Changelog
 
+## [1.9.2] - 2026-07-19
+
+Robustness patch driven by two independent external code reviews. No
+exploitable vulnerabilities were found in either review; every item
+below is defensive hardening or hygiene. No config changes; existing
+installs upgrade in place.
+
+### Reliability
+
+- **Refresh interval is now bounded (5-1440 minutes) at parse time.**
+  Previously only the floor was enforced in code; a hand-edited
+  `config.json` value above ~8,948 minutes would overflow Node's 32-bit
+  `setTimeout` limit under the adaptive multiplier and invert into a
+  continuous request loop against the NWS API. Out-of-range values are
+  clamped with a warning.
+- **Outages no longer accelerate polling.** A failed poll previously
+  reset the adaptive-polling streak, snapping a relaxed schedule back
+  to the fastest rate for the duration of an NWS outage. Failures now
+  leave the schedule where it was.
+- **`startPolling` is idempotent.** A guard enforces the single
+  timer-chain invariant that previously relied on call-site behavior,
+  removing a silent-death landmine for future refactors.
+
+### Hygiene
+
+- **Error response bodies are explicitly discarded.** 429, 5xx,
+  non-retryable, and off-origin responses are acted on via status and
+  headers only; their unread bodies kept undici connections out of the
+  keep-alive pool until garbage collection. All four branches now
+  cancel the body immediately.
+- **Exhausted retry sequences are counted in `apiFailures`.** They
+  previously appeared in `retryCount` only, understating the hourly
+  metrics line. Retry exhaustion also no longer sleeps a full backoff
+  before giving up.
+- **Rejected `stationId` values are sanitized before being echoed** to
+  the log (CR/LF stripped, length-capped), matching the convention
+  already used for the User-Agent contact.
+- **`noUncheckedIndexedAccess` enabled** in `tsconfig.json` for
+  stricter index typing across the codebase.
+- **Redirect-handling trade-off documented.** `assertNwsOrigin` now
+  records that redirects are followed before the origin check runs —
+  acceptable while requests carry no secrets — so any future change
+  adding credentials knows to revisit the model first.
+
+### Testing
+
+- 10 new tests (suite now 77): refresh-interval clamping including a
+  property-based `setTimeout`-overflow invariant, body-discard coverage
+  for all four non-OK branches plus a 200-path regression guard,
+  retry-exhaustion metrics, log sanitization, polling idempotence, and
+  adaptive-schedule behavior across a failed poll.
+
 ## [1.9.1] - 2026-07-17
 
 Documentation and release-infrastructure patch. The plugin code is
