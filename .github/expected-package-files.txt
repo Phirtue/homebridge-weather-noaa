@@ -1,0 +1,30 @@
+# Every file the published npm tarball is allowed to contain, one per
+# line, sorted. CI fails on any drift in either direction (see
+# scripts/verify-pack.mjs). The files allowlist in package.json bounds
+# what CAN ship; this list asserts what DOES ship, catching the class
+# of accidental disclosure an allowlist misses — a tsconfig change that
+# starts emitting extra outputs, or new tooling dropping a config into
+# dist/. Adding a source file? Add its dist/ outputs here in the same PR.
+CHANGELOG.md
+LICENSE
+README.md
+config.schema.json
+dist/index.d.ts
+dist/index.js
+dist/index.js.map
+dist/nwsClient.d.ts
+dist/nwsClient.js
+dist/nwsClient.js.map
+dist/platform.d.ts
+dist/platform.js
+dist/platform.js.map
+dist/platformAccessory.d.ts
+dist/platformAccessory.js
+dist/platformAccessory.js.map
+dist/settings.d.ts
+dist/settings.js
+dist/settings.js.map
+dist/stationCache.d.ts
+dist/stationCache.js
+dist/stationCache.js.map
+package.json
