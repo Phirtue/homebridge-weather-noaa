@@ -22,10 +22,25 @@ jobs:
       contents: write # upload signature bundles to releases
       id-token: write # Sigstore keyless signing via GitHub OIDC
     steps:
+      # Block-mode egress control: this job signs with the repository's
+      # OIDC identity (id-token: write), so its egress is restricted to
+      # GitHub (release asset download/upload, cosign binary download) and
+      # Sigstore. GitHub Actions infrastructure endpoints are implicitly
+      # allowed by harden-runner.
       - name: Harden runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            github.com:443
+            oauth2.sigstore.dev:443
+            objects.githubusercontent.com:443
+            rekor.sigstore.dev:443
+            release-assets.githubusercontent.com:443
+            tuf-repo-cdn.sigstore.dev:443
+            uploads.github.com:443
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2

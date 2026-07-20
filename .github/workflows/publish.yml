@@ -24,28 +24,56 @@ jobs:
       # that crosses the job boundary.
       hashes: ${{ steps.hash.outputs.hashes }}
     steps:
-      # Records every outbound connection from the runner (visible in the
-      # StepSecurity dashboard linked from the job log). Audit mode for now:
-      # the publish path talks to npm, GitHub, and Sigstore, and a wrong
-      # egress allowlist here would break releases. Tighten to block mode
-      # once a few release runs confirm the endpoint list.
+      # Block-mode egress control. This job holds the highest-value token
+      # in the repository (id-token: write for npm provenance), and it runs
+      # npm ci of dev dependencies — exactly the code a supply-chain attack
+      # would ride in on. Any outbound connection not on this list is
+      # refused, so a compromised dependency cannot exfiltrate the OIDC
+      # context. Endpoint list built from the audit-mode runs of prior
+      # releases: GitHub (checkout, gh release upload, action downloads),
+      # nodejs.org (setup-node fallback), npm registry, and Sigstore
+      # (npm --provenance and cosign keyless signing). GitHub Actions
+      # infrastructure endpoints (OIDC token fetch, log upload) are
+      # implicitly allowed by harden-runner. A missed endpoint fails the
+      # release loudly and is recoverable: fix the list, re-run the job.
       - name: Harden runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            github.com:443
+            nodejs.org:443
+            oauth2.sigstore.dev:443
+            objects.githubusercontent.com:443
+            registry.npmjs.org:443
+            rekor.sigstore.dev:443
+            release-assets.githubusercontent.com:443
+            tuf-repo-cdn.sigstore.dev:443
+            uploads.github.com:443
 
       # Actions pinned to commit SHAs so a compromised tag cannot inject code.
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # gh authenticates via the GH_TOKEN env var below; don't leave
+          # the token on disk in a job holding publish capability.
+          persist-credentials: false
 
       # Node 24 bundles npm >= 11.16, which satisfies the npm >= 11.5.1
       # floor for trusted publishing, so no separate npm upgrade (which
       # would be an unpinned install at release time) is needed.
+      # package-manager-cache: false keeps this publishing job away from
+      # the shared Actions cache entirely — a poisoned cache entry must
+      # not be able to feed code into the environment that signs and
+      # publishes the package.
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       # Reject lockfile entries that resolve anywhere other than the npm
       # registry over https (defends against lockfile poisoning).
@@ -67,6 +95,11 @@ jobs:
       # passing in the same environment that built the tarball.
       - name: Unit tests
         run: npm test
+
+      # The tarball must contain exactly the files in the checked-in
+      # manifest; refuse to publish anything with drifted contents.
+      - name: Verify package contents
+        run: node scripts/verify-pack.mjs
 
       # Guard the trusted-publishing floor explicitly, since it now relies
       # on the npm bundled with the Node version above.
@@ -129,7 +162,7 @@ jobs:
       actions: read # read this workflow run's metadata into the provenance
       id-token: write # sign the provenance via Sigstore
       contents: write # upload the .intoto.jsonl to the release
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0 # zizmor: ignore[unpinned-uses] tag ref required by the generator's self-verification
     with:
       base64-subjects: ${{ needs.publish.outputs.hashes }}
       provenance-name: homebridge-weather-noaa.intoto.jsonl

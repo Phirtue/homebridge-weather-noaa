@@ -1,0 +1,58 @@
+name: Workflow security analysis
+
+# Static analysis of the GitHub Actions workflows themselves (zizmor).
+# The workflows here are hand-hardened, but nothing else mechanically
+# guards future edits against the classes that creep in: template
+# injection via ${{ }} in run blocks, pwn-request patterns, credential
+# persistence in checkouts, cache poisoning of publish jobs, unpinned
+# actions. Any finding fails the job; deliberate exceptions are recorded
+# inline with "zizmor: ignore[rule]" comments next to the code they
+# excuse.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload SARIF results to code scanning
+      actions: read
+    steps:
+      # Block-mode egress control: checkout (github.com), the zizmor
+      # container image (ghcr.io + its backing storage), online audits
+      # and SARIF upload (api.github.com).
+      - name: Harden runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            ghcr.io:443
+            github.com:443
+            objects.githubusercontent.com:443
+            pkg-containers.githubusercontent.com:443
+            uploads.github.com:443
+
+      # Actions pinned to commit SHAs so a compromised tag cannot inject code.
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # No step in this job pushes; don't leave the token on disk.
+          persist-credentials: false
+
+      # The zizmor version is pinned and resolves to a digest-pinned
+      # container image recorded inside the action at the pinned SHA, so
+      # the analyzer itself cannot be swapped out from under the check.
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@6599ee8b7a49aef6a770f63d261d214911a7ce02 # v0.6.0
+        with:
+          version: 1.27.0
+          persona: regular

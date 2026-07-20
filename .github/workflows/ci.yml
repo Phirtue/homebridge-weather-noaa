@@ -35,6 +35,9 @@ jobs:
       # Actions pinned to commit SHAs so a compromised tag cannot inject code.
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # No step in this job pushes; don't leave the token on disk.
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -57,7 +60,7 @@ jobs:
       # Deliberately not hash-pinned (Scorecard flags this): floating specs
       # like ^1 / latest / beta are the point of the compatibility matrix.
       - name: Install Homebridge version ${{ matrix.homebridge-version }}
-        run: npm install --no-save --ignore-scripts "homebridge@${{ matrix.homebridge-version }}"
+        run: npm install --no-save --ignore-scripts "homebridge@${{ matrix.homebridge-version }}" # zizmor: ignore[adhoc-packages] floating specs are the point of the compatibility matrix
 
       - name: Lint
         run: npm run lint
@@ -67,6 +70,12 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      # The tarball must contain exactly the files in the checked-in
+      # manifest — catches accidental disclosure (stray configs, extra
+      # compiler outputs) that the package.json files allowlist can't.
+      - name: Verify package contents
+        run: node scripts/verify-pack.mjs
 
       - name: Verify Plugin Metadata
         run: |
