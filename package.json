@@ -43,7 +43,7 @@
   ],
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^22.10.7",
+    "@types/node": "^22.20.1",
     "eslint": "^10.8.0",
     "fast-check": "4.9.0",
     "homebridge": "^2.2.1",
