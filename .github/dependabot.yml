@@ -4,6 +4,12 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # @types/node majors track Node majors. This plugin's engines still
+      # claim Node 18, so typings must stay on the 22.x line; majors beyond
+      # that can accept APIs that do not exist on supported runtimes.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
