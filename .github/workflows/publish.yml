@@ -187,7 +187,20 @@ jobs:
           VERSION: ${{ steps.pkg.outputs.version }}
         run: |
           local_sri="sha512-$(openssl dgst -sha512 -binary "$PKG-$VERSION.tgz" | base64 -w0)"
-          remote_sri=$(npm view "$PKG@$VERSION" dist.integrity)
+          # The registry's read path lags the publish by a few seconds to a
+          # few minutes (1.10.1 got a 404 four seconds after a successful
+          # publish). Poll with a bound rather than fail on the first miss.
+          remote_sri=""
+          for attempt in $(seq 1 12); do
+            remote_sri=$(npm view "$PKG@$VERSION" dist.integrity 2>/dev/null || true)
+            [ -n "$remote_sri" ] && break
+            echo "registry has not served $PKG@$VERSION yet (attempt $attempt/12); retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$remote_sri" ]; then
+            echo "::error::registry never served $PKG@$VERSION; cannot verify the tarball"
+            exit 1
+          fi
           if [ "$local_sri" != "$remote_sri" ]; then
             echo "::error::packed tarball ($local_sri) differs from registry ($remote_sri)"
             exit 1
