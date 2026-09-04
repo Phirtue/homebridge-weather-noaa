@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.10.1] - 2026-09-03
+
+Release-infrastructure patch. The plugin code is identical to 1.10.0;
+no config changes, existing installs upgrade in place.
+
+The 1.10.0 release pipeline stopped after the npm publish: the cosign
+installer had moved to cosign v3, which requests a trusted timestamp
+from `timestamp.sigstore.dev` when producing a signature bundle, and
+that host was not on the publish job's block-mode egress allowlist. The
+npm package and its provenance attestation are intact, but the v1.10.0
+GitHub release carries no tarball, SBOM, signature, or SLSA provenance.
+Those cannot be honestly generated after the fact (see VERIFYING.md), so
+this release ships the complete artifact set.
+
+### Release pipeline
+
+- **`timestamp.sigstore.dev` added to the egress allowlist** of the
+  publish and SBOM-backfill workflows.
+- **cosign binary version pinned** (`cosign-release: v3.0.6`). The
+  installer action was already SHA-pinned; the binary it fetched was
+  not, which is how the toolchain changed underneath a pinned workflow.
+- **Publish step is idempotent.** If a later step fails, re-running the
+  job skips the (already rejected-by-npm) publish and completes signing
+  and attestation instead of failing at the first step.
+- **Packed tarball is verified against the registry** before it is
+  attested and attached: its SHA-512 integrity must equal what npm
+  serves for the version, turning a comment's assumption into a check
+  and making the re-run path safe.
+- **Release tag must match `package.json` version**, so a tag cut before
+  a version bump can never publish the previous code under a new tag.
+
 ## [1.10.0] - 2026-09-03
 
 Privacy and hardening release from a full security code review. No
