@@ -36,7 +36,13 @@ workflow, and the exact source commit. You can also inspect it on the
 package's [npmjs.com page](https://www.npmjs.com/package/homebridge-weather-noaa)
 under "Provenance".
 
-## 2. SLSA build provenance (v1.9.1 and later)
+## 2. SLSA build provenance (v1.9.1 and later, except v1.10.0)
+
+> **v1.10.0** has npm provenance only. Its release pipeline failed after
+> the npm publish (a Sigstore timestamp endpoint was missing from the
+> egress allowlist), so no tarball, SBOM, signature, or SLSA provenance
+> was attached to that GitHub release, and none was added afterwards.
+> v1.10.1 is code-identical and carries the full set.
 
 Install [slsa-verifier](https://github.com/slsa-framework/slsa-verifier),
 then download the tarball and provenance from the

@@ -32,10 +32,12 @@ jobs:
       # context. Endpoint list built from the audit-mode runs of prior
       # releases: GitHub (checkout, gh release upload, action downloads),
       # nodejs.org (setup-node fallback), npm registry, and Sigstore
-      # (npm --provenance and cosign keyless signing). GitHub Actions
-      # infrastructure endpoints (OIDC token fetch, log upload) are
-      # implicitly allowed by harden-runner. A missed endpoint fails the
-      # release loudly and is recoverable: fix the list, re-run the job.
+      # (npm --provenance and cosign keyless signing, including the
+      # timestamp authority that cosign v3 consults when producing a
+      # bundle). GitHub Actions infrastructure endpoints (OIDC token
+      # fetch, log upload) are implicitly allowed by harden-runner. A
+      # missed endpoint fails the release loudly and is recoverable: fix
+      # the list, re-run the job (the publish step is idempotent below).
       - name: Harden runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
@@ -50,6 +52,7 @@ jobs:
             registry.npmjs.org:443
             rekor.sigstore.dev:443
             release-assets.githubusercontent.com:443
+            timestamp.sigstore.dev:443
             tuf-repo-cdn.sigstore.dev:443
             uploads.github.com:443
 
@@ -108,11 +111,43 @@ jobs:
           npm --version
           node -e "const [maj, min, pat] = require('child_process').execSync('npm --version').toString().trim().split('.').map(Number); if (maj < 11 || (maj === 11 && (min < 5 || (min === 5 && pat < 1)))) { console.error('npm >= 11.5.1 required for trusted publishing'); process.exit(1); }"
 
+      # The release tag must name the version package.json carries; a tag
+      # cut before the version bump landed would otherwise publish the
+      # previous version's code under the new tag.
+      - name: Verify release tag matches package version
+        id: pkg
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::release tag $TAG does not match package.json version $version"
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       # --provenance links the published tarball to this exact commit and
       # workflow run via a Sigstore attestation shown on npmjs.com.
       # Authentication happens via OIDC (id-token: write), not a token.
+      #
+      # Idempotent: npm refuses to publish over an existing version, so if
+      # this job is re-run after a failure in a LATER step (signing,
+      # upload), the publish is skipped and the rest of the job proceeds.
+      # The integrity check after `npm pack` below guarantees the artifacts
+      # signed and attested on the re-run are byte-identical to what the
+      # registry already serves.
       - name: Publish with provenance
-        run: npm publish --provenance --access public
+        env:
+          PKG: ${{ steps.pkg.outputs.name }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          if npm view "$PKG@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$PKG@$VERSION is already on the registry; skipping publish (re-run after a post-publish failure)."
+          else
+            npm publish --provenance --access public
+          fi
 
       - name: Generate SBOM (CycloneDX)
         run: npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
@@ -124,8 +159,14 @@ jobs:
       #     --bundle sbom.cdx.json.sigstore.json \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
       #     --certificate-identity-regexp 'github.com/Phirtue/homebridge-weather-noaa'
+      # The installer action is SHA-pinned, but the cosign binary it fetches
+      # is a separate input: pin it too, so the signing toolchain (and the
+      # network endpoints it needs, see the allowlist above) only changes
+      # when this line does.
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
 
       - name: Sign SBOM (Sigstore keyless)
         run: cosign sign-blob --yes --bundle sbom.cdx.json.sigstore.json sbom.cdx.json
@@ -135,6 +176,23 @@ jobs:
       # provenance below cover the artifact users actually install.
       - name: Pack tarball for provenance
         run: npm pack
+
+      # Turn the byte-identical assumption above into a checked fact: the
+      # tarball about to be attested and attached must carry the exact
+      # integrity hash the registry serves for this version. This is also
+      # what makes the idempotent re-run path safe.
+      - name: Verify packed tarball matches the registry
+        env:
+          PKG: ${{ steps.pkg.outputs.name }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          local_sri="sha512-$(openssl dgst -sha512 -binary "$PKG-$VERSION.tgz" | base64 -w0)"
+          remote_sri=$(npm view "$PKG@$VERSION" dist.integrity)
+          if [ "$local_sri" != "$remote_sri" ]; then
+            echo "::error::packed tarball ($local_sri) differs from registry ($remote_sri)"
+            exit 1
+          fi
+          echo "Tarball integrity matches the registry: $remote_sri"
 
       - name: Compute artifact hashes for provenance
         id: hash
