@@ -15,6 +15,18 @@ const RATE_LIMIT_FLOOR_MS = 5_000;
 const BACKOFF_CEILING_MS = 60_000;
 const RETRY_AFTER_CAP_MS = 5 * 60_000;
 const MAX_RETRIES = 4;
+const MAX_REDIRECTS = 3;
+
+/**
+ * Strip the coordinates from a /points URL before it reaches a log line.
+ * The user's coordinates are the most sensitive value this plugin handles;
+ * an error message that embeds them ends up in Homebridge logs that get
+ * pasted into GitHub issues. Station and grid paths carry only public NWS
+ * identifiers and are left intact.
+ */
+export function describeUrl(url: string): string {
+  return url.replace(/\/points\/[^/?#]*/, '/points/<coordinates>');
+}
 
 /**
  * Randomize a delay to +/-10% so the whole install base does not retry
@@ -34,7 +46,9 @@ export function withJitter(ms: number): number {
  *  - 429 handling honoring a (capped) Retry-After header
  *  - streaming body reads, so the byte cap aborts oversized responses
  *    before they are buffered in memory
- *  - rejecting redirects that leave the NWS origin
+ *  - manual redirect handling: a redirect target is checked against the
+ *    NWS origin BEFORE any request is issued to it, so no header (the
+ *    User-Agent carries the user's optional contact) ever leaves the origin
  */
 export class NwsClient {
   public readonly metrics = {
@@ -49,6 +63,9 @@ export class NwsClient {
   ) {}
 
   async fetchJson<T>(url: string): Promise<T> {
+    this.assertNwsOrigin(url);
+    let target = url;
+    let redirects = 0;
     let attempt = 0;
     let backoffMs = RATE_LIMIT_FLOOR_MS;
 
@@ -57,7 +74,7 @@ export class NwsClient {
       const timer = setTimeout(() => ac.abort(), REQUEST_TIMEOUT_MS);
 
       try {
-        const res = await fetch(url, {
+        const res = await fetch(target, {
           method: 'GET',
           headers: {
             'User-Agent': this.userAgent,
@@ -65,18 +82,36 @@ export class NwsClient {
             'Accept': 'application/geo+json',
           },
           signal: ac.signal,
-          redirect: 'follow',
+          redirect: 'manual',
         });
 
-        // Validate the post-redirect origin before acting on ANY part of the
-        // response, including status codes and Retry-After headers. An
-        // off-origin server must not be able to influence retry timing.
-        // Its body is never read; discard it so the stream is released.
+        // Belt and braces: with redirect: 'manual' the response URL is the
+        // one we requested, which was origin-checked before the request.
+        // Verify anyway before acting on ANY part of the response, so a
+        // future change to redirect handling cannot silently regress this.
         try {
           this.assertNwsOrigin(res.url);
         } catch (originErr) {
           this.discardBody(res);
           throw originErr;
+        }
+
+        if (res.status >= 300 && res.status <= 399) {
+          // The NWS API issues 301s (e.g. for over-precise /points
+          // coordinates). Resolve the target and check its origin BEFORE
+          // re-issuing; a redirect hop is not a retry attempt.
+          this.discardBody(res);
+          const location = res.headers.get('location');
+          if (!location) {
+            throw new Error(`NOAA API ${res.status} without Location for ${describeUrl(target)}`);
+          }
+          const next = new URL(location, target);
+          this.assertNwsOrigin(next.href);
+          if (++redirects > MAX_REDIRECTS) {
+            throw new Error(`NOAA API: more than ${MAX_REDIRECTS} redirects for ${describeUrl(url)}`);
+          }
+          target = next.href;
+          continue;
         }
 
         if (res.ok) {
@@ -117,7 +152,8 @@ export class NwsClient {
         // No apiFailures++ here: the catch below counts this throw, and
         // incrementing in both places double-counted non-retryable errors.
         this.discardBody(res);
-        throw new Error(`NOAA API ${res.status} ${res.statusText} for ${url}`);
+        const status = res.statusText ? `${res.status} ${res.statusText}` : String(res.status);
+        throw new Error(`NOAA API ${status} for ${describeUrl(target)}`);
       } catch (err) {
         const isAbort = (err as { name?: string })?.name === 'AbortError';
         const code = (err as { code?: string })?.code;
@@ -150,27 +186,23 @@ export class NwsClient {
     // never sees it; count it here or exhausted 429/5xx sequences would
     // appear in retryCount but not apiFailures.
     this.metrics.apiFailures++;
-    throw new Error(`NOAA API: exhausted ${MAX_RETRIES} retries for ${url}`);
+    throw new Error(`NOAA API: exhausted ${MAX_RETRIES} retries for ${describeUrl(target)}`);
   }
 
   /**
-   * fetch() follows redirects transparently (the NWS API issues 301s, e.g.
-   * for over-precise /points coordinates). Verify the final URL is still on
-   * the NWS origin before trusting any part of the response: status code,
-   * headers (Retry-After), or body.
-   *
-   * NOTE: redirects are followed before this check runs, so an off-origin
-   * target has already received the request (headers included) by the time
-   * the response is rejected. Acceptable today because requests carry no
-   * secrets — if any credential is ever added to request headers, switch to
-   * redirect: 'manual' and validate the Location target BEFORE re-issuing.
+   * Every URL this client requests — the caller's, and every redirect
+   * target — must be on the NWS origin. Redirects are handled manually
+   * (see fetchJson), so this runs BEFORE a request is issued and nothing,
+   * headers included, is ever sent to a foreign host. Only the offending
+   * origin is reported; the full URL could carry the user's coordinates.
    */
-  private assertNwsOrigin(finalUrl: string): void {
-    if (!finalUrl) {
-      return; // no redirect information available
+  private assertNwsOrigin(candidate: string): void {
+    if (!candidate) {
+      return; // test doubles may omit the response URL
     }
-    if (new URL(finalUrl).origin !== new URL(NWS_API_BASE).origin) {
-      throw new Error(`Redirected off NWS origin to ${finalUrl}`);
+    const origin = new URL(candidate).origin;
+    if (origin !== new URL(NWS_API_BASE).origin) {
+      throw new Error(`Redirected off NWS origin to ${origin}`);
     }
   }
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { NwsClient, withJitter } from '../src/nwsClient.js';
+import { NwsClient, describeUrl, withJitter } from '../src/nwsClient.js';
 import { fakeResponse, makeFakeLog } from './helpers.js';
 
 const URL_OK = 'https://api.weather.gov/points/47.6204,-122.3494';
@@ -110,6 +110,111 @@ describe('fetchJson', () => {
     expect(client.metrics.apiFailures).toBe(1);
   });
 
+  it('redacts coordinates from error messages', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse({ url: URL_OK, status: 404 })));
+    const { client } = makeClient();
+    const err = await client.fetchJson(URL_OK).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('/points/<coordinates>');
+    expect((err as Error).message).not.toMatch(/47\.6204|122\.3494/);
+  });
+
+  it('refuses a URL that is not on the NWS origin before any request', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { client } = makeClient();
+    await expect(client.fetchJson('https://evil.example/points/1,2'))
+      .rejects.toThrow(/Redirected off NWS origin to https:\/\/evil\.example$/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('redirect handling', () => {
+  // fetch is called with redirect: 'manual', so the 3xx response itself
+  // is returned and the client decides whether to follow it.
+  const redirect = (location: string, status = 301) =>
+    fakeResponse({ url: URL_OK, status, headers: { location } });
+
+  it('follows a same-origin redirect and requests the Location target', async () => {
+    const target = 'https://api.weather.gov/points/47.62,-122.35';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(redirect(target))
+      .mockResolvedValueOnce(fakeResponse({ url: target, body: '{"ok":true}' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { client } = makeClient();
+
+    await expect(client.fetchJson(URL_OK)).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(target);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+    // A redirect hop is not a retry and not a failure.
+    expect(client.metrics.retryCount).toBe(0);
+    expect(client.metrics.apiFailures).toBe(0);
+  });
+
+  it('resolves a relative Location against the NWS origin', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(redirect('/points/47.62,-122.35', 308))
+      .mockResolvedValueOnce(fakeResponse({ url: URL_OK, body: '{}' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { client } = makeClient();
+
+    await expect(client.fetchJson(URL_OK)).resolves.toEqual({});
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('https://api.weather.gov/points/47.62,-122.35');
+  });
+
+  it('never contacts an off-origin redirect target', async () => {
+    const fetchMock = vi.fn(async () => redirect('https://evil.example/collect?ua=1'));
+    vi.stubGlobal('fetch', fetchMock);
+    const { client } = makeClient();
+
+    const err = await client.fetchJson(URL_OK).catch((e: Error) => e);
+    expect((err as Error).message).toBe('Redirected off NWS origin to https://evil.example');
+    expect(fetchMock).toHaveBeenCalledTimes(1); // the redirect target was never requested
+    expect(client.metrics.apiFailures).toBe(1);
+  });
+
+  it('cancels the redirect response body before following', async () => {
+    const res = redirect('https://api.weather.gov/points/47.62,-122.35');
+    const cancel = vi.fn(async () => undefined);
+    (res as unknown as { body: unknown }).body = { cancel };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(res)
+      .mockResolvedValueOnce(fakeResponse({ url: URL_OK, body: '{}' })));
+    const { client } = makeClient();
+
+    await client.fetchJson(URL_OK);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up on a redirect loop', async () => {
+    const fetchMock = vi.fn(async () => redirect(URL_OK));
+    vi.stubGlobal('fetch', fetchMock);
+    const { client } = makeClient();
+
+    await expect(client.fetchJson(URL_OK)).rejects.toThrow(/more than 3 redirects/);
+    expect(fetchMock).toHaveBeenCalledTimes(4); // original + 3 hops
+  });
+
+  it('rejects a 3xx without a Location header', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse({ url: URL_OK, status: 301 })));
+    const { client } = makeClient();
+    await expect(client.fetchJson(URL_OK)).rejects.toThrow(/301 without Location/);
+  });
+});
+
+describe('describeUrl', () => {
+  it('redacts only the /points coordinates', () => {
+    expect(describeUrl('https://api.weather.gov/points/47.6204,-122.3494'))
+      .toBe('https://api.weather.gov/points/<coordinates>');
+    expect(describeUrl('https://api.weather.gov/points/47.6204,-122.3494/stations'))
+      .toBe('https://api.weather.gov/points/<coordinates>/stations');
+    expect(describeUrl('https://api.weather.gov/stations/KSEA/observations/latest'))
+      .toBe('https://api.weather.gov/stations/KSEA/observations/latest');
+  });
+});
+
+describe('response size cap', () => {
   it('rejects oversized bodies via the streaming byte cap', async () => {
     const big = 'x'.repeat(2_000_001);
     vi.stubGlobal('fetch', vi.fn(async () => fakeResponse({ url: URL_OK, body: big })));

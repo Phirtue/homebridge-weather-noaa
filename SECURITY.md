@@ -88,6 +88,15 @@ Every release is independently verifiable:
 
 For reviewers and the curious: this repository runs CodeQL static
 analysis, dependency review on every PR, lockfile linting (registry-only
-https sources), script-less CI installs, SHA-pinned GitHub Actions with
-least-privilege tokens, Dependabot updates, and branch protection
-requiring all checks to pass before anything reaches `main`.
+https sources), script-less installs everywhere (CI, release, and local
+via `.npmrc`), block-mode egress allowlists on both CI and release jobs,
+SHA-pinned GitHub Actions with least-privilege tokens, Dependabot updates
+with a 7-day cooldown, and rulesets requiring all checks to pass before
+anything reaches `main` or a release tag.
+
+### Privacy
+
+The plugin sends nothing anywhere except `api.weather.gov`. The
+configured coordinates are the most sensitive value it handles: they are
+coarsened to 2 decimal places (~1 km) before use, stored only in an
+owner-only cache file, and never written to the Homebridge log.

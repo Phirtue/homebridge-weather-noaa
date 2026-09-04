@@ -44,9 +44,9 @@ describe('parseConfig', () => {
   it('accepts a minimal valid config with defaults', () => {
     const { platform } = makePlatform(VALID);
     const cfg = invoke<Record<string, unknown>>(platform, 'parseConfig');
-    expect(cfg).toMatchObject({
-      latitude: 47.6204,
-      longitude: -122.3494,
+    expect(cfg).toEqual({
+      latitude: 47.62,
+      longitude: -122.35,
       baseRefreshMs: 15 * 60 * 1000,
       adaptivePolling: true,
       stationId: null,
@@ -66,11 +66,11 @@ describe('parseConfig', () => {
     }
   });
 
-  it('rounds coordinates to the 4 decimals the NWS API accepts', () => {
+  it('coarsens coordinates to 2 decimals (~1 km) before they leave the process', () => {
     const { platform } = makePlatform({ latitude: 47.620422, longitude: -122.349358 });
     const cfg = invoke<{ latitude: number; longitude: number }>(platform, 'parseConfig');
-    expect(cfg.latitude).toBe(47.6204);
-    expect(cfg.longitude).toBe(-122.3494);
+    expect(cfg.latitude).toBe(47.62);
+    expect(cfg.longitude).toBe(-122.35);
   });
 
   it('enforces the 5 minute refresh floor', () => {
@@ -119,6 +119,61 @@ describe('buildUserAgent', () => {
     expect(ua).not.toMatch(/[\r\n]/);
     expect(ua).toContain('me@example.comX-Injected: 1');
   });
+
+  it('strips other control characters that would make undici reject the header', () => {
+    const { platform } = makePlatform({
+      ...VALID,
+      userAgentContact: 'me@\u0000example\u007f.com\tx',
+    });
+    const ua = invoke<string>(platform, 'buildUserAgent');
+    expect(ua).toContain('me@example.comx');
+    // The result must be a valid header value end to end.
+    expect(() => new Headers({ 'User-Agent': ua })).not.toThrow();
+  });
+});
+
+describe('coordinate privacy', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('never writes the coordinates to the log, even on request failure', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
+    try {
+      // 404 is non-retryable: fetchJson fails fast and its error message
+      // (which names the URL) is logged by discoverStation.
+      vi.stubGlobal('fetch', vi.fn(async () =>
+        new Response('', { status: 404, statusText: 'Not Found' }),
+      ));
+      const { platform, log } = makePlatform({ latitude: 47.620422, longitude: -122.349358 });
+      const result = await invoke<Promise<string | null>>(
+        platform, 'discoverStation', 47.62, -122.35, path.join(dir, 'cache.json'),
+      );
+      expect(result).toBeNull();
+      expect(log.messages.length).toBeGreaterThan(0);
+      for (const m of log.messages) {
+        expect(m).not.toMatch(/47\.62|122\.35/);
+      }
+      expect(log.messages.some((m) => m.includes('/points/<coordinates>'))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps coordinates out of the invalid-response error line', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ properties: { gridId: 'bad id' } }), { status: 200 }),
+    ));
+    const { platform, log } = makePlatform(VALID);
+    const result = await invoke<Promise<string | null>>(
+      platform, 'discoverStation', 47.62, -122.35, '/nonexistent/cache.json',
+    );
+    expect(result).toBeNull();
+    for (const m of log.messages) {
+      expect(m).not.toMatch(/47\.62|122\.35/);
+    }
+  });
 });
 
 describe('extractTemperatureC', () => {
@@ -150,6 +205,14 @@ describe('extractTemperatureC', () => {
   it('rejects unknown units', () => {
     expect(extract({ value: 21.5, unitCode: 'wmoUnit:furlongs', qualityControl: 'V' }))
       .toBeNull();
+  });
+
+  it('sanitizes an unknown unitCode before echoing it to the log', () => {
+    expect(extract({ value: 1, unitCode: 'wmoUnit:x\r\n[error] forged', qualityControl: 'V' }))
+      .toBeNull();
+    const line = log.messages.find((m) => m.includes('Unknown temperature unit'));
+    expect(line).toBeDefined();
+    expect(line).not.toMatch(/[\r\n]/);
   });
 
   it('rejects readings that failed MADIS quality control', () => {

@@ -1,5 +1,92 @@
 # Changelog
 
+## [1.10.0] - 2026-09-03
+
+Privacy and hardening release from a full security code review. No
+vulnerabilities were found; every item below reduces what the plugin
+exposes, tightens an existing defense, or removes something that was not
+earning its keep. No config changes. **Two behavior changes to note:**
+coordinates are now coarsened to 2 decimals (existing installs re-run
+station discovery once on first start), and Node 18 is no longer
+supported.
+
+### Privacy
+
+- **Coordinates are coarsened to 2 decimals (~1 km) before they leave
+  the process.** NWS resolves a point to a 2.5 km grid cell, so this
+  selects the same observation station in practice while sending NWS
+  (and writing to the station cache) a neighbourhood rather than a
+  street address. Previously 4 decimals (~11 m). Users who need a
+  specific station can still set `stationId`.
+- **Coordinates never appear in the Homebridge log.** The discovery
+  line that echoed them at info level, the invalid-response error, and
+  every HTTP error message that embedded a `/points/…` URL now report
+  `<coordinates>` instead. Homebridge logs get pasted into public bug
+  reports; this makes that safe to do.
+
+### Security
+
+- **Redirects are handled manually.** A redirect target is resolved and
+  checked against the NWS origin *before* any request is issued to it,
+  so no request header (including the optional `userAgentContact`)
+  can ever be sent to a foreign host. Previously redirects were
+  followed first and the final origin checked afterwards. Bounded at 3
+  hops; same-origin 301s from NWS still work.
+- **Cache temp files are opened with exclusive create (`wx`).** A stale
+  file or a planted symlink at the temp path now makes the write fail
+  safely instead of being followed.
+- **Cache files must be small regular files.** Reads open with
+  `O_NOFOLLOW` (a symlinked cache file is refused, not followed),
+  reject anything that is not a regular file (a planted FIFO or device
+  such as `/dev/zero` can no longer hang the read at boot), and cap the
+  size at 64 KB, checked on the open descriptor so the file cannot be
+  swapped between check and read. Anything failing these checks is
+  treated as corrupt and discarded, matching the existing handling for
+  malformed JSON.
+- **All API-sourced strings are sanitized before logging** (unit codes,
+  QC flags, weather conditions, timestamps): control characters
+  stripped, length capped. The same helper now handles config values.
+  Cached `gridId` is validated against the NWS office-ID pattern before
+  it is logged.
+- **User-Agent contact strips all control characters**, not just CR/LF,
+  so a stray tab or escape in `config.json` cannot make every request
+  fail with an invalid-header error.
+
+### Supply chain and CI
+
+- **Node 18 dropped** from `engines` and the CI matrix. It has been
+  end-of-life since April 2025; the supported set is now Node 20, 22,
+  24 and 26 (12 CI cells instead of 15).
+- **CI runs under block-mode egress control**, matching the release
+  workflow: any outbound connection from a build not on the allowlist
+  (GitHub, npm registry, nodejs.org, `api.weather.gov`) fails the job.
+- **Dependabot cooldown of 7 days** for both npm and GitHub Actions
+  updates, so freshly published (and possibly soon-yanked) releases do
+  not reach this repository's dependency PRs.
+- **Repository `.npmrc` sets `ignore-scripts=true`**, so a developer's
+  local `npm install` never runs dependency lifecycle scripts, the same
+  as CI and the publish job already do.
+- **`prepare` and `prepublishOnly` scripts removed.** The publish
+  workflow runs lint, build, tests and the package-manifest check as
+  explicit steps; `.npmrc` would have skipped the hooks anyway, and
+  publishing is OIDC-only so no manual path relied on them.
+
+### Cleanup
+
+- Removed an unused `userAgentContact` field from the parsed config
+  (the User-Agent is built directly from raw config).
+- `GRID_ID_RE` moved next to `STATION_ID_RE` and shared.
+
+### Testing
+
+- 24 new tests (suite now 101): manual redirect handling (same-origin
+  follow, relative `Location`, off-origin refusal with no request
+  sent, loop cap, missing `Location`, body cancel), coordinate
+  redaction in errors and logs, exclusive-create temp files against a
+  planted symlink, symlinked and non-regular cache paths, oversized
+  cache files for both caches, grid-ID validation, log sanitization,
+  and header-safe User-Agent contact.
+
 ## [1.9.2] - 2026-07-19
 
 Robustness patch driven by two independent external code reviews. No

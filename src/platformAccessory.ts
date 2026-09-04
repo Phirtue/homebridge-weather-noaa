@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { NOAAWeatherPlatform } from './platform.js';
-import { writeJsonAtomic } from './stationCache.js';
+import { readJsonBounded, writeJsonAtomic } from './stationCache.js';
 
 const TEMP_SUBTYPE = 'noaa-temperature';
 const HUMIDITY_SUBTYPE = 'noaa-humidity';
@@ -229,7 +229,7 @@ export class NOAAWeatherAccessory {
       return { temperature: null, humidity: null };
     }
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.cacheFile, 'utf8')) as Partial<WeatherReading>;
+      const parsed = readJsonBounded(this.cacheFile) as Partial<WeatherReading>;
       const t = typeof parsed.temperature === 'number' && Number.isFinite(parsed.temperature)
         ? clampTemperature(parsed.temperature) : null;
       const h = typeof parsed.humidity === 'number' && Number.isFinite(parsed.humidity)
