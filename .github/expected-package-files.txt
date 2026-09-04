@@ -21,6 +21,9 @@ dist/platform.js.map
 dist/platformAccessory.d.ts
 dist/platformAccessory.js
 dist/platformAccessory.js.map
+dist/sanitize.d.ts
+dist/sanitize.js
+dist/sanitize.js.map
 dist/settings.d.ts
 dist/settings.js
 dist/settings.js.map

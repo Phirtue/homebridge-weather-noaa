@@ -143,6 +143,22 @@ describe('NOAAWeatherAccessory', () => {
     expect(h.log.messages.some((m) => m.includes('Corrupted weather cache'))).toBe(true);
   });
 
+  it('discards an oversized cache file without parsing it', () => {
+    // Valid JSON, but far past the 64 KB cap: must be treated as corrupt
+    // rather than read into memory and honored.
+    fs.writeFileSync(
+      cacheFile(),
+      JSON.stringify({ temperature: 20, humidity: 50, pad: 'x'.repeat(70_000) }),
+    );
+    const h = makeHarness(dir);
+    new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+    expect(fs.existsSync(cacheFile())).toBe(false);
+    expect(h.log.messages.some((m) => m.includes('Corrupted weather cache'))).toBe(true);
+    expect(h.temp.updateCharacteristic)
+      .not.toHaveBeenCalledWith(Characteristic.CurrentTemperature, 20);
+  });
+
   describe('staleness', () => {
     const HOUR = 60 * 60 * 1000;
 

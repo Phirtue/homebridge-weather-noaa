@@ -13,17 +13,22 @@ import * as path from 'path';
 
 import { NOAAWeatherAccessory } from './platformAccessory.js';
 import { NwsClient, NWS_API_BASE, withJitter } from './nwsClient.js';
+import { sanitizeForLog } from './sanitize.js';
 import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './settings.js';
-import { readStationCache, writeJsonAtomic, STATION_ID_RE, PointsCache } from './stationCache.js';
-
-const GRID_ID_RE = /^[A-Z]{2,4}$/;
+import {
+  readStationCache, writeJsonAtomic, GRID_ID_RE, STATION_ID_RE, PointsCache,
+} from './stationCache.js';
 
 /**
- * The NWS API expects coordinates with at most 4 decimal places; anything
- * more precise gets a 301 redirect. Rounding client-side saves that round
- * trip and keeps the station cache key stable.
+ * Coordinates are rounded to 2 decimals (~1.1 km) before they leave the
+ * process. NWS resolves a point to a 2.5 km forecast grid cell and lists
+ * that cell's observation stations, so neighbourhood-level precision
+ * selects the same station in practice while sending NWS (and writing to
+ * the cache file) something well short of a street address. Users who
+ * need a specific station set `stationId`. The NWS API itself accepts at
+ * most 4 decimals and 301-redirects anything longer.
  */
-const COORD_DECIMALS = 4;
+export const COORD_DECIMALS = 2;
 
 /**
  * MADIS QC flags treated as acceptable for HomeKit display:
@@ -67,7 +72,6 @@ interface PluginConfig {
   baseRefreshMs: number;
   adaptivePolling: boolean;
   stationId: string | null;
-  userAgentContact: string | null;
 }
 
 interface PointResponse {
@@ -198,21 +202,12 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       if (STATION_ID_RE.test(upper)) {
         stationId = upper;
       } else {
-        // Echo the rejected value with CR/LF stripped and length-capped
-        // (same convention as buildUserAgent) so a hostile config value
-        // cannot fabricate lines in the Homebridge log.
-        const shown = raw.stationId.replace(/[\r\n]/g, '').slice(0, 32);
         this.log.warn(
-          `Configured stationId "${shown}" is invalid (expected 3-8 alphanumerics). ` +
-          'Falling back to auto-discovery.',
+          `Configured stationId "${sanitizeForLog(raw.stationId, 32)}" is invalid ` +
+          '(expected 3-8 alphanumerics). Falling back to auto-discovery.',
         );
       }
     }
-
-    const userAgentContact =
-      typeof raw.userAgentContact === 'string' && raw.userAgentContact.trim().length > 0
-        ? raw.userAgentContact
-        : null;
 
     const round = (v: number): number => Number(v.toFixed(COORD_DECIMALS));
 
@@ -222,7 +217,6 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       baseRefreshMs: refreshMinutes * 60 * 1000,
       adaptivePolling,
       stationId,
-      userAgentContact,
     };
   }
 
@@ -230,14 +224,17 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
    * NWS-recommended User-Agent format: "(myapp.com, contact)".
    * https://www.weather.gov/documentation/services-web-api
    *
-   * The optional contact field is sanitized to strip CR/LF, preventing
-   * HTTP header injection from a misconfigured config.json value.
+   * The optional contact field has control characters stripped (CR/LF
+   * would be header injection; the rest make undici reject the header and
+   * fail every request) and is length-capped, so a misconfigured
+   * config.json value cannot break or abuse the request.
    */
   private buildUserAgent(): string {
     const contactRaw = (this.config as Record<string, unknown>).userAgentContact;
     const home = 'github.com/Phirtue/homebridge-weather-noaa';
     if (typeof contactRaw === 'string' && contactRaw.trim().length > 0) {
-      const clean = contactRaw.trim().replace(/[\r\n]/g, '').slice(0, 200);
+      // eslint-disable-next-line no-control-regex
+      const clean = contactRaw.trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
       return `homebridge-weather-noaa/${PLUGIN_VERSION} (${home}, ${clean})`;
     }
     return `homebridge-weather-noaa/${PLUGIN_VERSION} (${home})`;
@@ -339,7 +336,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     cacheFile: string,
   ): Promise<string | null> {
     try {
-      this.log.info(`Fetching NOAA grid data for: ${latitude},${longitude}`);
+      // The coordinates themselves are deliberately kept out of the log:
+      // Homebridge logs get pasted into public bug reports.
+      this.log.info('Fetching NOAA grid data for the configured coordinates.');
 
       const point = await this.client.fetchJson<PointResponse>(
         `${NWS_API_BASE}/points/${encodeURIComponent(`${latitude},${longitude}`)}`,
@@ -354,7 +353,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         !Number.isInteger(gridX) || !Number.isInteger(gridY) ||
         (gridX as number) < 0 || (gridY as number) < 0
       ) {
-        this.log.error(`Invalid /points response for ${latitude},${longitude}`);
+        this.log.error('Invalid /points response for the configured coordinates.');
         return null;
       }
 
@@ -472,10 +471,11 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     const conditions =
       props.presentWeather?.map((w) => w?.weather).filter(Boolean).join(', ') || 'None';
 
-    // Routine polls log at debug; applyReading logs at info when values change.
+    // Routine polls log at debug; applyReading logs at info when values
+    // change. Free-text fields from the API body are sanitized first.
     this.log.debug(
-      `NOAA - ts=${props.timestamp ?? 'n/a'} temp=${tempC ?? 'n/a'}°C ` +
-      `humidity=${humidity ?? 'n/a'}% conditions=${conditions}`,
+      `NOAA - ts=${sanitizeForLog(props.timestamp ?? 'n/a')} temp=${tempC ?? 'n/a'}°C ` +
+      `humidity=${humidity ?? 'n/a'}% conditions=${sanitizeForLog(conditions, 120)}`,
     );
 
     const observedMs = props.timestamp ? Date.parse(props.timestamp) : NaN;
@@ -492,7 +492,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       return null;
     }
     if (qv.qualityControl && !ACCEPTABLE_QC.has(qv.qualityControl)) {
-      this.log.debug(`Rejecting temperature with QC=${qv.qualityControl}`);
+      this.log.debug(`Rejecting temperature with QC=${sanitizeForLog(qv.qualityControl, 8)}`);
       return null;
     }
     const unit = (qv.unitCode ?? '').toLowerCase();
@@ -515,7 +515,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     if (unit.endsWith('k')) {
       return qv.value - 273.15;
     }
-    this.log.warn(`Unknown temperature unit "${qv.unitCode}", ignoring reading.`);
+    this.log.warn(`Unknown temperature unit "${sanitizeForLog(qv.unitCode, 32)}", ignoring reading.`);
     return null;
   }
 
@@ -524,7 +524,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       return null;
     }
     if (qv.qualityControl && !ACCEPTABLE_QC.has(qv.qualityControl)) {
-      this.log.debug(`Rejecting humidity with QC=${qv.qualityControl}`);
+      this.log.debug(`Rejecting humidity with QC=${sanitizeForLog(qv.qualityControl, 8)}`);
       return null;
     }
     return Math.max(0, Math.min(100, qv.value));

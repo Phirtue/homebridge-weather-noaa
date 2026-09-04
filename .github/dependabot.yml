@@ -4,16 +4,23 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Wait a week before proposing any new release. Compromised packages
+    # are usually yanked within days of publication; the cooldown keeps
+    # them out of this repository's dependency PRs during that window.
+    cooldown:
+      default-days: 7
     ignore:
-      # @types/node majors track Node majors. This plugin's engines still
-      # claim Node 18, so typings must stay on the 22.x line; majors beyond
-      # that can accept APIs that do not exist on supported runtimes.
+      # @types/node majors track Node majors. Typings stay on the 22.x
+      # line so they cannot accept APIs that do not exist on the oldest
+      # supported runtime (Node 20).
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     # One PR for all action bumps. codeql-action's init/analyze steps must
     # run the same version, so split PRs can never pass CI individually.
     groups:
