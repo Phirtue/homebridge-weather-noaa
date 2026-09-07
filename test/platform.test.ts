@@ -431,6 +431,37 @@ describe('healthy station selection', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it('does not select a station whose observation has no valid timestamp', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/points/')) {
+        return new Response(pointBody, { status: 200 });
+      }
+      if (url.includes('/gridpoints/')) {
+        return new Response(stationsBody('D2629', 'KPAE'), { status: 200 });
+      }
+      if (url.includes('/stations/D2629/')) {
+        return new Response(JSON.stringify({
+          properties: {
+            temperature: { value: 18.89, unitCode: 'wmoUnit:degC' },
+          },
+        }), { status: 200 });
+      }
+      return new Response(observationBody('2026-09-07T15:20:00Z'), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+
+    const selection = await invoke<Promise<{ stationId: string } | null>>(
+      platform, 'discoverStation', 47.62, -122.35, '/nonexistent/points.json',
+    );
+
+    expect(selection?.stationId).toBe('KPAE');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it('does not fan out probes during a general network failure', async () => {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
@@ -610,6 +641,61 @@ describe('startPolling', () => {
       .noteObservationFailure).not.toHaveBeenCalled();
   });
 
+  it('does not mutate accessory state when shutdown interrupts replacement discovery', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    let resolvePoint: ((response: Response) => void) | undefined;
+    const pendingPoint = new Promise<Response>((resolve) => {
+      resolvePoint = resolve;
+    });
+    const stale = JSON.stringify({
+      properties: {
+        timestamp: '2026-09-01T18:00:00Z',
+        temperature: { value: 18.89, unitCode: 'wmoUnit:degC' },
+      },
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/stations/D2629/')) {
+        return new Response(stale, { status: 200 });
+      }
+      if (url.includes('/points/')) {
+        return pendingPoint;
+      }
+      throw new Error('unexpected request');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+    const handler = makeHandler();
+
+    invoke(
+      platform,
+      'startPolling',
+      'D2629',
+      handler,
+      BASE_MS,
+      false,
+      { latitude: 47.62, longitude: -122.35, cacheFile: '/unused' },
+    );
+    for (let i = 0; i < 10 && fetchMock.mock.calls.length < 2; i++) {
+      await Promise.resolve();
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    invoke(platform, 'shutdown');
+    resolvePoint?.(new Response(JSON.stringify({
+      properties: { gridId: 'SEW', gridX: 138, gridY: 80 },
+    }), { status: 200 }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    const mock = handler as unknown as {
+      applyReading: ReturnType<typeof vi.fn>;
+      noteObservationFailure: ReturnType<typeof vi.fn>;
+    };
+    expect(mock.applyReading).not.toHaveBeenCalled();
+    expect(mock.noteObservationFailure).not.toHaveBeenCalled();
+  });
+
   it('replaces a stale auto-selected station with a fresh candidate', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
@@ -783,21 +869,30 @@ describe('startPolling', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const { platform, log } = makePlatform(VALID);
+    const handler = makeHandler();
 
     invoke(
       platform,
       'startPolling',
       'D2629',
-      makeHandler(),
-      BASE_MS,
-      false,
+      handler,
+      24 * 60 * 60 * 1000,
+      true,
       { latitude: 47.62, longitude: -122.35, cacheFile: '/unused' },
     );
     await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(BASE_MS * 1.1);
+    await vi.advanceTimersByTimeAsync(59 * 60 * 1000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(60 * 1000 + 1);
 
-    expect(fetchMock).toHaveBeenCalledTimes(4); // poll, failed search, then poll only
-    expect(log.messages.filter((m) => m.includes('looking for a replacement'))).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(log.messages.filter((m) => m.includes('looking for a replacement'))).toHaveLength(2);
+    const mock = handler as unknown as {
+      applyReading: ReturnType<typeof vi.fn>;
+      noteObservationFailure: ReturnType<typeof vi.fn>;
+    };
+    expect(mock.applyReading).not.toHaveBeenCalled();
+    expect(mock.noteObservationFailure).toHaveBeenCalledTimes(2);
   });
 
   it('reuses a probed initial observation without another request', async () => {

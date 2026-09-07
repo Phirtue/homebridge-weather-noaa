@@ -555,7 +555,12 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
           1 + Math.floor(unchangedStreak / ADAPTIVE_GROW_AFTER_UNCHANGED),
         );
       }
-      const delay = withJitter(baseRefreshMs * mult);
+      let delay = withJitter(baseRefreshMs * mult);
+      if (nextFailoverAttemptAt > 0) {
+        // A relaxed adaptive schedule can be several days long. Keep failed
+        // station replacement attempts on their own one-hour ceiling.
+        delay = Math.min(delay, Math.max(1, nextFailoverAttemptAt - Date.now()));
+      }
       const t = setTimeout(() => {
         this.timers.delete(t);
         // eslint-disable-next-line @typescript-eslint/no-use-before-define
@@ -577,31 +582,48 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         if (this.shuttingDown) {
           return;
         }
-        const failoverChanged = !this.isObservationFresh(observation)
-          ? await tryFailover('is stale')
-          : null;
-        const changed = failoverChanged ?? handler.applyReading(observation);
+        if (autoStation && !this.isObservationFresh(observation)) {
+          const failoverChanged = await tryFailover('is stale');
+          if (this.shuttingDown) {
+            return;
+          }
+          if (failoverChanged === null) {
+            // Never replace a last-known-good value with data already known
+            // to be stale. The accessory will independently expire the
+            // retained value according to its original observation time.
+            handler.noteObservationFailure();
+            return;
+          }
+          unchangedStreak = failoverChanged ? 0 : unchangedStreak + 1;
+          return;
+        }
+
+        const changed = handler.applyReading(observation);
         unchangedStreak = changed ? 0 : unchangedStreak + 1;
       } catch (err) {
-        if (!this.shuttingDown) {
-          const stationUnavailable =
-            err instanceof UnusableObservationError ||
-            (err instanceof NwsHttpError && (err.status === 404 || err.status === 410));
-          const failoverChanged = stationUnavailable
-            ? await tryFailover('has no usable observation')
-            : null;
-          if (failoverChanged !== null) {
-            unchangedStreak = failoverChanged ? 0 : unchangedStreak + 1;
-          } else {
-            this.log.error('NOAA observation fetch failed:', (err as Error).message);
-            // A failed poll is not a value change: leave the adaptive streak
-            // alone. Resetting it here snapped a relaxed schedule back to the
-            // fastest polling rate for the entire duration of an NWS outage —
-            // maximum load aimed at a service that is already struggling.
-            // Failed polls also never reach applyReading, so staleness must be
-            // re-evaluated here or an extended outage leaves sensors active.
-            handler.noteObservationFailure();
-          }
+        if (this.shuttingDown) {
+          return;
+        }
+        const stationUnavailable =
+          err instanceof UnusableObservationError ||
+          (err instanceof NwsHttpError && (err.status === 404 || err.status === 410));
+        const failoverChanged = stationUnavailable
+          ? await tryFailover('has no usable observation')
+          : null;
+        if (this.shuttingDown) {
+          return;
+        }
+        if (failoverChanged !== null) {
+          unchangedStreak = failoverChanged ? 0 : unchangedStreak + 1;
+        } else {
+          this.log.error('NOAA observation fetch failed:', (err as Error).message);
+          // A failed poll is not a value change: leave the adaptive streak
+          // alone. Resetting it here snapped a relaxed schedule back to the
+          // fastest polling rate for the entire duration of an NWS outage —
+          // maximum load aimed at a service that is already struggling.
+          // Failed polls also never reach applyReading, so staleness must be
+          // re-evaluated here or an extended outage leaves sensors active.
+          handler.noteObservationFailure();
         }
       } finally {
         inFlight = false;
@@ -657,7 +679,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
   private isObservationFresh(observation: ParsedObservation): boolean {
     return (
-      observation.observedAt === null ||
+      observation.observedAt !== null &&
       Date.now() - observation.observedAt <= STALE_OBSERVATION_MS
     );
   }

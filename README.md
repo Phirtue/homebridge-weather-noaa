@@ -49,8 +49,8 @@ a formal [security policy](./SECURITY.md). See
   package contains only compiled plugin code.
 - **Automatic station discovery and failover** using the NOAA points and
   gridpoints APIs. Discovery probes up to ten nearby candidates for a
-  current usable observation; auto-selected stations are replaced if
-  they become stale or unavailable.
+  current timestamped observation; auto-selected stations are replaced
+  if they become stale or unavailable.
 - **Adaptive polling** that stretches the refresh interval up to 4x when
   readings are stable and snaps back on any change.
 - **Persistent readings.** HomeKit shows the last known values
