@@ -39,20 +39,24 @@ export interface StationCacheResult {
  * something already sits at that path — a stale temp file, or a symlink
  * planted to redirect the write elsewhere — the open fails instead of
  * following it. Failures are logged, never thrown — a broken cache must
- * not take the plugin down.
+ * not take the plugin down. Returns whether the rename committed, so a
+ * caller that tracks persisted state can retry after a transient failure.
  */
-export function writeJsonAtomic(log: Logging, file: string, data: unknown): void {
+export function writeJsonAtomic(log: Logging, file: string, data: unknown): boolean {
   const tmp = `${file}.${process.pid}.tmp`;
   try {
     fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600, flag: 'wx' });
     fs.renameSync(tmp, file);
+    return true;
   } catch (err) {
     try {
       fs.unlinkSync(tmp);
     } catch {
       /* ignore */
     }
-    log.warn(`Failed to persist ${file}: ${(err as Error).message}`);
+    const code = (err as NodeJS.ErrnoException).code;
+    log.warn(`Failed to persist NOAA cache${code ? ` (${code})` : ''}.`);
+    return false;
   }
 }
 

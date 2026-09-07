@@ -91,7 +91,8 @@ that gives us a chance to remediate before public disclosure.
 
 ## Verifying Releases
 
-Every release is independently verifiable:
+Releases v1.10.1 and later carry the complete verification set below.
+The partial v1.10.0 release is documented in [VERIFYING.md](VERIFYING.md).
 
 - **npm provenance** — packages are published from GitHub Actions via
   [trusted publishing](https://docs.npmjs.com/trusted-publishers) with a
@@ -115,8 +116,10 @@ analysis, dependency review on every PR, lockfile linting (registry-only
 https sources), script-less installs everywhere (CI, release, and local
 via `.npmrc`), block-mode egress allowlists on both CI and release jobs,
 SHA-pinned GitHub Actions with least-privilege tokens, Dependabot updates
-with a 7-day cooldown, and rulesets requiring all checks to pass before
-anything reaches `main` or a release tag.
+with a 7-day cooldown, and a ruleset requiring all checks to pass before
+anything reaches `main`. Release tags are immutable after creation, and
+the publish workflow independently verifies that the tagged commit is on
+`main` before rebuilding, testing, and publishing it.
 
 ### Privacy
 

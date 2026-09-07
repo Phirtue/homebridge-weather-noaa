@@ -15,6 +15,7 @@ jobs:
   analyze:
     name: Analyze TypeScript
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       security-events: write # upload analysis results

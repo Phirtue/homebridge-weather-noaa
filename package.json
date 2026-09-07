@@ -8,7 +8,8 @@
   "scripts": {
     "build": "rimraf ./dist && tsc",
     "lint": "eslint src --max-warnings=0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck:test": "tsc -p tsconfig.test.json"
   },
   "keywords": [
     "homebridge-plugin",

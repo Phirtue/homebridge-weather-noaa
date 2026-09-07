@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+### Runtime robustness
+
+- Temperature and humidity now have independent, persisted freshness
+  clocks and time-driven expiry. Empty, timestamp-only, or partial
+  responses cannot reactivate retained stale values, even when adaptive
+  polling intervals exceed the two-hour stale threshold.
+- Shutdown now aborts active NOAA requests, releases retry sleeps, and
+  prevents polling or discovery timers from being recreated.
+- Malformed optional NWS response fields and User-Agent control
+  characters fail safely; direct accessory updates enforce finite,
+  HomeKit-bounded values as a second validation layer.
+- Invalid JSON errors no longer echo server-controlled response snippets
+  into Homebridge logs.
+
+### Supply-chain and CI
+
+- Moved zizmor off security-affected, yanked version 1.27.0 to
+  digest-pinned 1.29.0.
+- Added strict test type-checking, tests for the repository-owned
+  lockfile verifier, bounded the remaining directly defined workflow
+  jobs, and prevented `npx` from downloading a missing Homebridge binary.
+- Release builds now verify that the tagged commit is reachable from
+  protected `main`; lockfile URLs must match each package name and version.
+
 ## [1.10.2] - 2026-09-06
 
 Focused follow-up to the 1.10 security review. No configuration changes.

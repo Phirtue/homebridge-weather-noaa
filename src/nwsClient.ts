@@ -58,11 +58,29 @@ export class NwsClient {
     retryCount: 0,
     rateLimitedCount: 0,
   };
+  private readonly activeRequests = new Set<AbortController>();
+  private readonly retrySleeps = new Map<NodeJS.Timeout, () => void>();
+  private shuttingDown = false;
 
   constructor(
     private readonly log: Logging,
     private readonly userAgent: string,
   ) {}
+
+  /**
+   * Abort active I/O and release retry sleeps during Homebridge shutdown.
+   * A settled sleep unblocks fetchJson, whose shutdown check prevents the
+   * retry loop from issuing another request.
+   */
+  shutdown(): void {
+    this.shuttingDown = true;
+    for (const controller of this.activeRequests) {
+      controller.abort();
+    }
+    for (const finish of [...this.retrySleeps.values()]) {
+      finish();
+    }
+  }
 
   async fetchJson<T>(url: string): Promise<T> {
     this.assertNwsOrigin(url);
@@ -72,7 +90,11 @@ export class NwsClient {
     let backoffMs = RATE_LIMIT_FLOOR_MS;
 
     while (attempt <= MAX_RETRIES) {
+      if (this.shuttingDown) {
+        throw new Error('NOAA client is shut down');
+      }
       const ac = new AbortController();
+      this.activeRequests.add(ac);
       const timer = setTimeout(() => ac.abort(), REQUEST_TIMEOUT_MS);
 
       try {
@@ -118,7 +140,13 @@ export class NwsClient {
 
         if (res.ok) {
           const text = await this.readBodyCapped(res);
-          return JSON.parse(text) as T;
+          try {
+            return JSON.parse(text) as T;
+          } catch {
+            // Modern V8 syntax errors can quote part of the body. Do not
+            // propagate server-controlled response text into Homebridge logs.
+            throw new Error(`NOAA API returned invalid JSON for ${describeUrl(target)}`);
+          }
         }
 
         if (res.status === 429) {
@@ -159,18 +187,27 @@ export class NwsClient {
           : String(res.status);
         throw new Error(`NOAA API ${status} for ${describeUrl(target)}`);
       } catch (err) {
+        if (this.shuttingDown) {
+          throw new Error('NOAA client is shut down', { cause: err });
+        }
         const isAbort = (err as { name?: string })?.name === 'AbortError';
         const code = (err as { code?: string })?.code;
+        const causeCode = (err as { cause?: { code?: string } })?.cause?.code;
         const isNetwork =
           isAbort ||
           code === 'ENOTFOUND' || code === 'ECONNRESET' ||
           code === 'ECONNREFUSED' || code === 'ETIMEDOUT' ||
-          (err instanceof TypeError && /fetch failed/i.test(err.message));
+          (typeof causeCode === 'string' && causeCode.startsWith('UND_ERR_')) ||
+          (err instanceof TypeError && /fetch failed|terminated/i.test(err.message));
 
         if (isNetwork && attempt < MAX_RETRIES) {
           this.metrics.retryCount++;
+          const message = sanitizeForLog(
+            describeUrl(String((err as Error).message ?? 'request failed')),
+            120,
+          );
           this.log.warn(
-            `Network error (${isAbort ? 'timeout' : (err as Error).message}); ` +
+            `Network error (${isAbort ? 'timeout' : message}); ` +
             `retrying in ${(backoffMs / 1000).toFixed(1)}s.`,
           );
           await this.sleep(withJitter(backoffMs));
@@ -183,6 +220,7 @@ export class NwsClient {
         throw err;
       } finally {
         clearTimeout(timer);
+        this.activeRequests.delete(ac);
       }
     }
 
@@ -227,6 +265,7 @@ export class NwsClient {
   private async readBodyCapped(res: Response): Promise<string> {
     const declared = Number(res.headers.get('content-length'));
     if (Number.isFinite(declared) && declared > RESPONSE_BYTE_CAP) {
+      await res.body?.cancel().catch(() => { /* ignore */ });
       throw new Error(`Response Content-Length ${declared} exceeds ${RESPONSE_BYTE_CAP} byte cap`);
     }
     if (!res.body) {
@@ -270,6 +309,23 @@ export class NwsClient {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise((res) => setTimeout(res, ms));
+    if (this.shuttingDown) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const sleeps = this.retrySleeps;
+      const state: { timer?: NodeJS.Timeout } = {};
+      const finish = (): void => {
+        if (state.timer) {
+          clearTimeout(state.timer);
+          sleeps.delete(state.timer);
+        }
+        resolve();
+      };
+      const timer = setTimeout(finish, ms);
+      state.timer = timer;
+      timer.unref();
+      sleeps.set(timer, finish);
+    });
   }
 }

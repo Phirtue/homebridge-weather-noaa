@@ -36,6 +36,12 @@ for (const [location, entry] of Object.entries(lock.packages ?? {})) {
     errors.push(`${location}: package entry is not an object`);
     continue;
   }
+  if (
+    !/^(?:node_modules\/(?:@[^/]+\/)?[^/]+)(?:\/node_modules\/(?:@[^/]+\/)?[^/]+)*$/
+      .test(location)
+  ) {
+    errors.push(`${location}: invalid node_modules package location`);
+  }
   if (entry.link === true) {
     errors.push(`${location}: linked packages are not permitted`);
     continue;
@@ -50,9 +56,20 @@ for (const [location, entry] of Object.entries(lock.packages ?? {})) {
         resolved.hostname !== 'registry.npmjs.org' ||
         resolved.port !== '' ||
         resolved.username !== '' ||
-        resolved.password !== ''
+        resolved.password !== '' ||
+        resolved.search !== '' ||
+        resolved.hash !== ''
       ) {
         errors.push(`${location}: resolved URL is outside https://registry.npmjs.org`);
+      }
+      const packageName = location.slice(location.lastIndexOf('node_modules/') + 13);
+      const tarballName = packageName.split('/').at(-1);
+      const expectedPath =
+        typeof entry.version === 'string' && tarballName
+          ? `/${packageName}/-/${tarballName}-${entry.version}.tgz`
+          : null;
+      if (!expectedPath || resolved.pathname !== expectedPath) {
+        errors.push(`${location}: resolved tarball does not match its package name and version`);
       }
     } catch {
       errors.push(`${location}: resolved value is not a valid URL`);
@@ -60,7 +77,8 @@ for (const [location, entry] of Object.entries(lock.packages ?? {})) {
   }
   if (
     typeof entry.integrity !== 'string' ||
-    !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity)
+    !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(entry.integrity) ||
+    Buffer.from(entry.integrity.slice('sha512-'.length), 'base64').byteLength !== 64
   ) {
     errors.push(`${location}: missing or invalid SHA-512 integrity`);
   }

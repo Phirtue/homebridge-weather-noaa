@@ -73,6 +73,7 @@ describe('NOAAWeatherAccessory', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -102,6 +103,47 @@ describe('NOAAWeatherAccessory', () => {
     expect(fs.existsSync(cacheFile())).toBe(true);
   });
 
+  it('persists cumulative drift from the disk baseline', () => {
+    const h = makeHarness(dir);
+    const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+    acc.applyReading({ temperature: 20, humidity: 50 });
+    acc.applyReading({ temperature: 20.04, humidity: 50 });
+    expect(JSON.parse(fs.readFileSync(cacheFile(), 'utf8')).temperature).toBe(20);
+
+    // Each individual step is below epsilon, but total drift from the
+    // persisted value now exceeds it and must reach disk.
+    acc.applyReading({ temperature: 20.08, humidity: 50 });
+    expect(JSON.parse(fs.readFileSync(cacheFile(), 'utf8')).temperature).toBe(20.08);
+  });
+
+  it('retries persistence after a transient cache write failure', () => {
+    const h = makeHarness(dir);
+    const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+    fs.writeFileSync(`${cacheFile()}.${process.pid}.tmp`, 'block first exclusive create');
+
+    acc.applyReading({ temperature: 20, humidity: 50 });
+    expect(fs.existsSync(cacheFile())).toBe(false);
+
+    acc.applyReading({ temperature: 20, humidity: 50 });
+    expect(fs.existsSync(cacheFile())).toBe(true);
+  });
+
+  it('persists newer freshness hourly even when values do not change', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
+    const h = makeHarness(dir);
+    const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+    acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() });
+    const first = JSON.parse(fs.readFileSync(cacheFile(), 'utf8')).temperatureObservedAt;
+
+    vi.setSystemTime(new Date('2026-07-17T13:00:01Z'));
+    acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() });
+    const second = JSON.parse(fs.readFileSync(cacheFile(), 'utf8')).temperatureObservedAt;
+    expect(second).toBeGreaterThan(first);
+  });
+
   it('clamps out-of-range temperatures to the HomeKit range', () => {
     const h = makeHarness(dir);
     const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
@@ -109,6 +151,17 @@ describe('NOAAWeatherAccessory', () => {
     acc.applyReading({ temperature: 150, humidity: null });
     expect(h.temp.updateCharacteristic)
       .toHaveBeenCalledWith(Characteristic.CurrentTemperature, 100);
+  });
+
+  it('clamps direct humidity input and rejects non-finite direct values', () => {
+    const h = makeHarness(dir);
+    const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+    acc.applyReading({ temperature: Number.NaN, humidity: 150 });
+    expect(h.temp.updateCharacteristic)
+      .not.toHaveBeenCalledWith(Characteristic.CurrentTemperature, Number.NaN);
+    expect(h.humidity.updateCharacteristic)
+      .toHaveBeenCalledWith(Characteristic.CurrentRelativeHumidity, 100);
   });
 
   it('retains last values when a reading field is null', () => {
@@ -188,12 +241,77 @@ describe('NOAAWeatherAccessory', () => {
       const h = makeHarness(dir);
       const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
 
+      acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() });
+      h.temp.updateCharacteristic.mockClear();
+      h.humidity.updateCharacteristic.mockClear();
       acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() - 3 * HOUR });
       expect(h.temp.updateCharacteristic)
         .toHaveBeenCalledWith(Characteristic.StatusActive, false);
       expect(h.humidity.updateCharacteristic)
         .toHaveBeenCalledWith(Characteristic.StatusActive, false);
       expect(h.log.messages.some((m) => m.includes('stale'))).toBe(true);
+    });
+
+    it('expires fresh readings after two hours without waiting for another poll', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+      acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() });
+      h.temp.updateCharacteristic.mockClear();
+      h.humidity.updateCharacteristic.mockClear();
+
+      await vi.advanceTimersByTimeAsync(2 * HOUR + 1);
+      expect(h.temp.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, false);
+      expect(h.humidity.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, false);
+    });
+
+    it('does not reactivate retained values from a timestamp-only response', () => {
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+      acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() - 3 * HOUR });
+      h.temp.updateCharacteristic.mockClear();
+      h.humidity.updateCharacteristic.mockClear();
+      acc.applyReading({ temperature: null, humidity: null, observedAt: Date.now() });
+
+      expect(h.temp.updateCharacteristic)
+        .not.toHaveBeenCalledWith(Characteristic.StatusActive, true);
+      expect(h.humidity.updateCharacteristic)
+        .not.toHaveBeenCalledWith(Characteristic.StatusActive, true);
+    });
+
+    it('tracks freshness independently for partial observations', () => {
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+      acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() - 3 * HOUR });
+      h.temp.updateCharacteristic.mockClear();
+      h.humidity.updateCharacteristic.mockClear();
+      acc.applyReading({ temperature: 21, humidity: null, observedAt: Date.now() });
+
+      expect(h.temp.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, true);
+      expect(h.humidity.updateCharacteristic)
+        .not.toHaveBeenCalledWith(Characteristic.StatusActive, true);
+    });
+
+    it('reactivates sensors for valid timestamp-less measurements', () => {
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+      acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() - 3 * HOUR });
+      h.temp.updateCharacteristic.mockClear();
+      h.humidity.updateCharacteristic.mockClear();
+      acc.applyReading({ temperature: 21, humidity: 51, observedAt: null });
+
+      expect(h.temp.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, true);
+      expect(h.humidity.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, true);
     });
 
     it('recovers to active when a fresh observation arrives', () => {
@@ -217,7 +335,7 @@ describe('NOAAWeatherAccessory', () => {
       acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() });
       const statusCalls = h.temp.updateCharacteristic.mock.calls
         .filter((c) => c[0] === Characteristic.StatusActive);
-      expect(statusCalls).toHaveLength(0);
+      expect(statusCalls).toEqual([[Characteristic.StatusActive, true]]);
     });
 
     it('marks sensors inactive when polls keep failing past the threshold', () => {
@@ -245,6 +363,24 @@ describe('NOAAWeatherAccessory', () => {
       vi.useRealTimers();
     });
 
+    it('does not refresh the staleness clock for an empty reading', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+      acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() });
+      vi.setSystemTime(new Date('2026-07-17T13:00:00Z'));
+      acc.applyReading({ temperature: null, humidity: null, observedAt: null });
+      h.temp.updateCharacteristic.mockClear();
+
+      vi.setSystemTime(new Date('2026-07-17T14:00:01Z'));
+      acc.noteObservationFailure();
+      expect(h.temp.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, false);
+      vi.useRealTimers();
+    });
+
     it('recovers to active when a poll succeeds after failures', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
@@ -261,10 +397,15 @@ describe('NOAAWeatherAccessory', () => {
       vi.useRealTimers();
     });
 
-    it('goes inactive after a cache-restored boot where every poll fails', () => {
-      fs.writeFileSync(cacheFile(), JSON.stringify({ temperature: 20, humidity: 50 }));
+    it('expires timestamped cache values when every poll fails after restart', () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
+      fs.writeFileSync(cacheFile(), JSON.stringify({
+        temperature: 20,
+        humidity: 50,
+        temperatureObservedAt: Date.now(),
+        humidityObservedAt: Date.now(),
+      }));
       const h = makeHarness(dir);
       const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
       h.temp.updateCharacteristic.mockClear();
@@ -277,7 +418,63 @@ describe('NOAAWeatherAccessory', () => {
       vi.useRealTimers();
     });
 
-    it('leaves staleness untouched when the timestamp is absent', () => {
+    it('restores legacy cache values as inactive until a live observation arrives', () => {
+      fs.writeFileSync(cacheFile(), JSON.stringify({ temperature: 20, humidity: 50 }));
+      const h = makeHarness(dir);
+      new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+      expect(h.temp.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, false);
+      expect(h.humidity.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, false);
+    });
+
+    it('clears the time-driven stale check during shutdown', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+      acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() });
+      h.temp.updateCharacteristic.mockClear();
+      h.humidity.updateCharacteristic.mockClear();
+      acc.shutdown();
+      await vi.advanceTimersByTimeAsync(3 * HOUR);
+
+      expect(h.temp.updateCharacteristic)
+        .not.toHaveBeenCalledWith(Characteristic.StatusActive, false);
+      expect(h.humidity.updateCharacteristic)
+        .not.toHaveBeenCalledWith(Characteristic.StatusActive, false);
+    });
+
+    it('retries a failed stale-status update without a tight loop', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+      acc.applyReading({ temperature: 20, humidity: 50, observedAt: Date.now() });
+
+      let failOnce = true;
+      h.temp.updateCharacteristic.mockImplementation((characteristic, value) => {
+        if (characteristic === Characteristic.StatusActive && value === false && failOnce) {
+          failOnce = false;
+          throw new Error('temporary HAP failure');
+        }
+      });
+      h.temp.updateCharacteristic.mockClear();
+
+      await vi.advanceTimersByTimeAsync(2 * HOUR + 1);
+      let attempts = h.temp.updateCharacteristic.mock.calls
+        .filter((c) => c[0] === Characteristic.StatusActive && c[1] === false);
+      expect(attempts).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(60 * 1000 + 1);
+      attempts = h.temp.updateCharacteristic.mock.calls
+        .filter((c) => c[0] === Characteristic.StatusActive && c[1] === false);
+      expect(attempts).toHaveLength(2);
+    });
+
+    it('treats a valid timestamp-less measurement as fresh at receipt time', () => {
       const h = makeHarness(dir);
       const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
       h.temp.updateCharacteristic.mockClear();
@@ -285,7 +482,7 @@ describe('NOAAWeatherAccessory', () => {
       acc.applyReading({ temperature: 20, humidity: 50, observedAt: null });
       const statusCalls = h.temp.updateCharacteristic.mock.calls
         .filter((c) => c[0] === Characteristic.StatusActive);
-      expect(statusCalls).toHaveLength(0);
+      expect(statusCalls).toEqual([[Characteristic.StatusActive, true]]);
     });
   });
 });

@@ -78,6 +78,27 @@ describe('fetchJson', () => {
     expect(client.metrics.retryCount).toBe(1);
   });
 
+  it('cancels a pending retry sleep during shutdown without another request', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () =>
+      fakeResponse({ url: URL_OK, status: 429, headers: { 'retry-after': '300' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { client } = makeClient();
+
+    const promise = client.fetchJson(URL_OK);
+    const settled = promise.catch((err: Error) => err);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    client.shutdown();
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    const result = await settled;
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toBe('NOAA client is shut down');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('retries 5xx with backoff and gives up after exhausting retries', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn(async () => fakeResponse({ url: URL_OK, status: 503 }));
@@ -129,6 +150,19 @@ describe('fetchJson', () => {
     const err = await client.fetchJson(URL_OK).catch((e: Error) => e);
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toContain('/points/<coordinates>');
+    expect((err as Error).message).not.toMatch(/47\.6204|122\.3494/);
+  });
+
+  it('does not expose malformed response text through JSON parse errors', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      fakeResponse({ url: URL_OK, body: '{"secret":"body-fragment"' }),
+    ));
+    const { client } = makeClient();
+    const err = await client.fetchJson(URL_OK).catch((e: Error) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('/points/<coordinates>');
+    expect((err as Error).message).not.toContain('body-fragment');
     expect((err as Error).message).not.toMatch(/47\.6204|122\.3494/);
   });
 
@@ -236,13 +270,36 @@ describe('response size cap', () => {
   });
 
   it('rejects oversized declared Content-Length before reading', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () =>
-      fakeResponse({
-        url: URL_OK, body: '{}', headers: { 'content-length': '99999999' },
-      }),
-    ));
+    const response = fakeResponse({
+      url: URL_OK, body: '{}', headers: { 'content-length': '99999999' },
+    });
+    const cancel = vi.spyOn(response.body!, 'cancel');
+    vi.stubGlobal('fetch', vi.fn(async () => response));
     const { client } = makeClient();
     await expect(client.fetchJson(URL_OK)).rejects.toThrow(/Content-Length 99999999 exceeds/);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a mid-body undici socket termination', async () => {
+    vi.useFakeTimers();
+    const terminated = fakeResponse({ url: URL_OK, body: '{}' });
+    (terminated as unknown as { body: ReadableStream }).body = new ReadableStream({
+      pull(controller) {
+        controller.error(new TypeError('terminated', {
+          cause: { code: 'UND_ERR_SOCKET' },
+        }));
+      },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(terminated)
+      .mockResolvedValueOnce(fakeResponse({ url: URL_OK, body: '{"ok":true}' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { client } = makeClient();
+
+    const promise = client.fetchJson(URL_OK);
+    await vi.advanceTimersByTimeAsync(6_000);
+    await expect(promise).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 
