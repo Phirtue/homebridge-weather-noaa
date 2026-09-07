@@ -13,75 +13,56 @@ on:
 permissions:
   contents: read
 
+# A duplicate release event must never race another publish for the same
+# immutable npm version. Do not cancel a publish that may already have
+# reached the registry; the workflow's idempotent recovery path completes it.
+concurrency:
+  group: publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
 jobs:
-  publish:
+  # Build and inspect the release without OIDC or write permissions. The
+  # compiler, linter, tests, and their transitive dependencies execute here,
+  # where none of them can request npm publishing credentials.
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # attach the SBOM to the GitHub release
-      id-token: write # OIDC token for npm provenance attestation
+    timeout-minutes: 30
     outputs:
-      # Consumed by the provenance job below; the hashes are the only thing
-      # that crosses the job boundary.
-      hashes: ${{ steps.hash.outputs.hashes }}
+      tarball_sha256: ${{ steps.artifact_hashes.outputs.tarball_sha256 }}
+      sbom_sha256: ${{ steps.artifact_hashes.outputs.sbom_sha256 }}
     steps:
-      # Block-mode egress control. This job holds the highest-value token
-      # in the repository (id-token: write for npm provenance), and it runs
-      # npm ci of dev dependencies — exactly the code a supply-chain attack
-      # would ride in on. Any outbound connection not on this list is
-      # refused, so a compromised dependency cannot exfiltrate the OIDC
-      # context. Endpoint list built from the audit-mode runs of prior
-      # releases: GitHub (checkout, gh release upload, action downloads),
-      # nodejs.org (setup-node fallback), npm registry, and Sigstore
-      # (npm --provenance and cosign keyless signing, including the
-      # timestamp authority that cosign v3 consults when producing a
-      # bundle). GitHub Actions infrastructure endpoints (OIDC token
-      # fetch, log upload) are implicitly allowed by harden-runner. A
-      # missed endpoint fails the release loudly and is recoverable: fix
-      # the list, re-run the job (the publish step is idempotent below).
+      # This job executes third-party development tools, so block unexpected
+      # egress even though its token is read-only and it has no OIDC access.
       - name: Harden runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
         with:
           egress-policy: block
           allowed-endpoints: >
             api.github.com:443
-            fulcio.sigstore.dev:443
             github.com:443
             nodejs.org:443
-            oauth2.sigstore.dev:443
             objects.githubusercontent.com:443
             registry.npmjs.org:443
-            rekor.sigstore.dev:443
             release-assets.githubusercontent.com:443
-            timestamp.sigstore.dev:443
-            tuf-repo-cdn.sigstore.dev:443
-            uploads.github.com:443
 
       # Actions pinned to commit SHAs so a compromised tag cannot inject code.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # gh authenticates via the GH_TOKEN env var below; don't leave
-          # the token on disk in a job holding publish capability.
+          # No step pushes; do not leave the read-only token on disk.
           persist-credentials: false
 
-      # Node 24 bundles npm >= 11.16, which satisfies the npm >= 11.5.1
-      # floor for trusted publishing, so no separate npm upgrade (which
-      # would be an unpinned install at release time) is needed.
-      # package-manager-cache: false keeps this publishing job away from
-      # the shared Actions cache entirely — a poisoned cache entry must
-      # not be able to feed code into the environment that signs and
-      # publishes the package.
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
       # Reject lockfile entries that resolve anywhere other than the npm
-      # registry over https (defends against lockfile poisoning).
+      # registry over HTTPS before any dependency code executes. This
+      # verifier is repository-owned and uses Node built-ins only.
       - name: Lint lockfile
-        run: npx lockfile-lint@5.0.0 --path package-lock.json --allowed-hosts npm --validate-https
+        run: node scripts/verify-lockfile.mjs
 
       # --ignore-scripts keeps dev-dependency lifecycle scripts from running;
       # lint and build are invoked explicitly below.
@@ -104,13 +85,6 @@ jobs:
       - name: Verify package contents
         run: node scripts/verify-pack.mjs
 
-      # Guard the trusted-publishing floor explicitly, since it now relies
-      # on the npm bundled with the Node version above.
-      - name: Verify npm supports trusted publishing
-        run: |
-          npm --version
-          node -e "const [maj, min, pat] = require('child_process').execSync('npm --version').toString().trim().split('.').map(Number); if (maj < 11 || (maj === 11 && (min < 5 || (min === 5 && pat < 1)))) { console.error('npm >= 11.5.1 required for trusted publishing'); process.exit(1); }"
-
       # The release tag must name the version package.json carries; a tag
       # cut before the version bump landed would otherwise publish the
       # previous version's code under the new tag.
@@ -121,12 +95,135 @@ jobs:
         run: |
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
+          if [ "$name" != "homebridge-weather-noaa" ]; then
+            echo "::error::unexpected package name $name"
+            exit 1
+          fi
           if [ "v$version" != "$TAG" ]; then
             echo "::error::release tag $TAG does not match package.json version $version"
             exit 1
           fi
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SBOM (CycloneDX)
+        run: npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
+
+      # Pack once in the unprivileged job. The privileged job publishes
+      # these exact bytes instead of rebuilding or executing the toolchain.
+      - name: Pack release tarball
+        run: npm pack --ignore-scripts
+
+      - name: Compute transfer hashes
+        id: artifact_hashes
+        env:
+          PKG: ${{ steps.pkg.outputs.name }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          echo "tarball_sha256=$(sha256sum "$PKG-$VERSION.tgz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sbom_sha256=$(sha256sum sbom.cdx.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # v4+ artifacts are immutable within a run. The receiving job also
+      # checks each file's SHA-256 against the outputs above before use.
+      - name: Upload release inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-inputs
+          path: |
+            ${{ steps.pkg.outputs.name }}-${{ steps.pkg.outputs.version }}.tgz
+            sbom.cdx.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  # Only this small job can mint the npm/Sigstore OIDC token. It does not
+  # check out the repository, install dependencies, or execute build tools.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # attach the SBOM and tarball to the GitHub release
+      id-token: write # npm trusted publishing and Sigstore keyless signing
+    outputs:
+      # Consumed by the isolated provenance generator below.
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      # Block-mode egress control. The necessary npm and Sigstore endpoints
+      # remain reachable, so privilege isolation—not the allowlist alone—is
+      # what keeps development dependencies away from publishing authority.
+      - name: Harden runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            fulcio.sigstore.dev:443
+            github.com:443
+            nodejs.org:443
+            oauth2.sigstore.dev:443
+            objects.githubusercontent.com:443
+            registry.npmjs.org:443
+            rekor.sigstore.dev:443
+            release-assets.githubusercontent.com:443
+            timestamp.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            uploads.github.com:443
+
+      # Node 24 bundles npm above the 11.5.1 trusted-publishing floor.
+      # Caching stays disabled in the release-authority job.
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      # Derive publish metadata from the GitHub release event, not from the
+      # unprivileged build job or transferred tarball.
+      - name: Derive trusted release metadata
+        id: release
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          node <<'NODE'
+          const { appendFileSync } = require('node:fs');
+          const tag = process.env.TAG ?? '';
+          const semverTag = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+          if (!semverTag.test(tag)) {
+            console.error(`::error::release tag ${tag} is not a supported semantic version`);
+            process.exit(1);
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, 'name=homebridge-weather-noaa\n');
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${tag.slice(1)}\n`);
+          NODE
+
+      - name: Download release inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-inputs
+          path: .
+
+      - name: Verify transferred release inputs
+        env:
+          PKG: ${{ steps.release.outputs.name }}
+          VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_TARBALL_SHA256: ${{ needs.build.outputs.tarball_sha256 }}
+          EXPECTED_SBOM_SHA256: ${{ needs.build.outputs.sbom_sha256 }}
+        run: |
+          set -euo pipefail
+          test -f "$PKG-$VERSION.tgz"
+          test -f sbom.cdx.json
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 2
+          tar -xOf "$PKG-$VERSION.tgz" package/package.json | \
+            node -e "let s=''; process.stdin.on('data', c => s += c).on('end', () => { const p=JSON.parse(s); if (p.name !== process.env.PKG || p.version !== process.env.VERSION) { console.error('::error::tarball package identity does not match the release'); process.exit(1); } });"
+          printf '%s  %s\n' "$EXPECTED_TARBALL_SHA256" "$PKG-$VERSION.tgz" | sha256sum -c -
+          printf '%s  %s\n' "$EXPECTED_SBOM_SHA256" sbom.cdx.json | sha256sum -c -
+
+      - name: Verify npm supports trusted publishing
+        run: |
+          npm --version
+          node -e "const [maj, min, pat] = require('child_process').execSync('npm --version').toString().trim().split('.').map(Number); if (maj < 11 || (maj === 11 && (min < 5 || (min === 5 && pat < 1)))) { console.error('npm >= 11.5.1 required for trusted publishing'); process.exit(1); }"
 
       # --provenance links the published tarball to this exact commit and
       # workflow run via a Sigstore attestation shown on npmjs.com.
@@ -135,22 +232,21 @@ jobs:
       # Idempotent: npm refuses to publish over an existing version, so if
       # this job is re-run after a failure in a LATER step (signing,
       # upload), the publish is skipped and the rest of the job proceeds.
-      # The integrity check after `npm pack` below guarantees the artifacts
-      # signed and attested on the re-run are byte-identical to what the
-      # registry already serves.
+      # The registry integrity check below guarantees the transferred
+      # tarball signed and attested on a re-run is byte-identical to what
+      # the registry already serves.
       - name: Publish with provenance
         env:
-          PKG: ${{ steps.pkg.outputs.name }}
-          VERSION: ${{ steps.pkg.outputs.version }}
+          PKG: ${{ steps.release.outputs.name }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           if npm view "$PKG@$VERSION" version >/dev/null 2>&1; then
             echo "::notice::$PKG@$VERSION is already on the registry; skipping publish (re-run after a post-publish failure)."
           else
-            npm publish --provenance --access public
+            # Defense in depth: a tarball should never gain lifecycle scripts,
+            # but publishing authority must not execute them if one is tampered.
+            npm publish "./$PKG-$VERSION.tgz" --ignore-scripts --provenance --access public
           fi
-
-      - name: Generate SBOM (CycloneDX)
-        run: npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
 
       # Keyless (Sigstore) signature over the SBOM: the same OIDC identity
       # that authenticates the npm publish signs the release asset, so there
@@ -158,7 +254,8 @@ jobs:
       #   cosign verify-blob sbom.cdx.json \
       #     --bundle sbom.cdx.json.sigstore.json \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-      #     --certificate-identity-regexp 'github.com/Phirtue/homebridge-weather-noaa'
+      #     --certificate-identity \
+      #       'https://github.com/Phirtue/homebridge-weather-noaa/.github/workflows/publish.yml@refs/tags/<tag>'
       # The installer action is SHA-pinned, but the cosign binary it fetches
       # is a separate input: pin it too, so the signing toolchain (and the
       # network endpoints it needs, see the allowlist above) only changes
@@ -171,20 +268,13 @@ jobs:
       - name: Sign SBOM (Sigstore keyless)
         run: cosign sign-blob --yes --bundle sbom.cdx.json.sigstore.json sbom.cdx.json
 
-      # npm pack is byte-identical to what npm publish sent (same tree, and
-      # pack normalizes timestamps), so hashing this tarball lets the SLSA
-      # provenance below cover the artifact users actually install.
-      - name: Pack tarball for provenance
-        run: npm pack
-
-      # Turn the byte-identical assumption above into a checked fact: the
-      # tarball about to be attested and attached must carry the exact
+      # The transferred tarball must carry the exact
       # integrity hash the registry serves for this version. This is also
       # what makes the idempotent re-run path safe.
       - name: Verify packed tarball matches the registry
         env:
-          PKG: ${{ steps.pkg.outputs.name }}
-          VERSION: ${{ steps.pkg.outputs.version }}
+          PKG: ${{ steps.release.outputs.name }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           local_sri="sha512-$(openssl dgst -sha512 -binary "$PKG-$VERSION.tgz" | base64 -w0)"
           # The registry's read path lags the publish by a few seconds to a
@@ -215,6 +305,7 @@ jobs:
         run: gh release upload "$TAG" sbom.cdx.json sbom.cdx.json.sigstore.json homebridge-weather-noaa-*.tgz --clobber
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.release.tag_name }}
 
   # SLSA build provenance, generated by the OpenSSF's isolated builder

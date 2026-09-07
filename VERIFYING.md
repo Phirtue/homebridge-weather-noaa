@@ -109,6 +109,10 @@ publish time, so for those releases use this identity instead:
   --certificate-identity "https://github.com/Phirtue/homebridge-weather-noaa/.github/workflows/sign-release-sboms.yml@refs/heads/main"
 ```
 
+(The completed one-off workflow was later removed to reduce privileged
+workflow surface. Its removal does not affect these signatures or their
+Rekor transparency-log entries.)
+
 (Signatures are present-tense claims about bytes, so backfilling them
 was truthful; build provenance was deliberately NOT backfilled, because
 it claims how an artifact was built and cannot be honestly generated
