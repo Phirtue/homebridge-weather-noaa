@@ -11,8 +11,8 @@ import type {
 } from 'homebridge';
 import * as path from 'path';
 
-import { NOAAWeatherAccessory } from './platformAccessory.js';
-import { NwsClient, NWS_API_BASE, withJitter } from './nwsClient.js';
+import { NOAAWeatherAccessory, STALE_OBSERVATION_MS } from './platformAccessory.js';
+import { NwsClient, NwsHttpError, NWS_API_BASE, withJitter } from './nwsClient.js';
 import { sanitizeForLog } from './sanitize.js';
 import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './settings.js';
 import {
@@ -64,6 +64,8 @@ const REFRESH_MAX_MINUTES = 1440;
  */
 const DISCOVERY_RETRY_INITIAL_MS = 60_000;
 const DISCOVERY_RETRY_MAX_MS = 15 * 60_000;
+const AUTO_FAILOVER_RETRY_MS = 60 * 60_000;
+const MAX_STATION_CANDIDATES = 10;
 
 /** Validated plugin configuration; null when required fields are unusable. */
 interface PluginConfig {
@@ -100,6 +102,25 @@ interface ObservationResponse {
     presentWeather?: unknown;
   };
 }
+
+interface ParsedObservation {
+  temperature: number | null;
+  humidity: number | null;
+  observedAt: number | null;
+}
+
+interface StationSelection {
+  stationId: string;
+  observation: ParsedObservation;
+}
+
+interface AutoStationContext {
+  latitude: number;
+  longitude: number;
+  cacheFile: string;
+}
+
+class UnusableObservationError extends Error {}
 
 export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
@@ -277,6 +298,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     }
 
     let stationId = cfg.stationId;
+    let initialObservation: ParsedObservation | null = null;
     if (stationId) {
       this.log.info(`Using manually configured NOAA station: ${stationId}`);
     } else {
@@ -288,17 +310,19 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     }
 
     if (!stationId) {
-      stationId = await this.discoverStation(cfg.latitude, cfg.longitude, cacheFile);
+      const selection = await this.discoverStation(cfg.latitude, cfg.longitude, cacheFile);
       if (this.shuttingDown) {
         return;
       }
-      if (!stationId) {
+      if (!selection) {
         // Same clock as failed polls: readings restored from a previous
         // run go inactive once they age past the staleness threshold.
         this.handler?.noteObservationFailure();
         this.scheduleDiscoveryRetry();
         return;
       }
+      stationId = selection.stationId;
+      initialObservation = selection.observation;
     }
 
     let accessory = this.accessories.get(uuid);
@@ -312,7 +336,17 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     if (!this.handler) {
       this.handler = new NOAAWeatherAccessory(this, accessory, PLUGIN_VERSION);
     }
-    this.startPolling(stationId, this.handler, cfg.baseRefreshMs, cfg.adaptivePolling);
+    const autoStation = cfg.stationId === null
+      ? { latitude: cfg.latitude, longitude: cfg.longitude, cacheFile }
+      : undefined;
+    this.startPolling(
+      stationId,
+      this.handler,
+      cfg.baseRefreshMs,
+      cfg.adaptivePolling,
+      autoStation,
+      initialObservation,
+    );
 
     for (const [cachedUuid, cached] of this.accessories) {
       if (cachedUuid !== uuid) {
@@ -354,7 +388,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     latitude: number,
     longitude: number,
     cacheFile: string,
-  ): Promise<string | null> {
+    excludeStationId?: string,
+  ): Promise<StationSelection | null> {
     try {
       // The coordinates themselves are deliberately kept out of the log:
       // Homebridge logs get pasted into public bug reports.
@@ -388,17 +423,49 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       );
 
       const features = Array.isArray(stations?.features) ? stations.features : [];
-      const candidates = features
+      const candidates = [...new Set(features
         .map((f) => f?.properties?.stationIdentifier)
-        .filter((id): id is string => typeof id === 'string' && STATION_ID_RE.test(id));
+        .filter((id): id is string => typeof id === 'string' && STATION_ID_RE.test(id)))]
+        .filter((id) => id !== excludeStationId)
+        .slice(0, MAX_STATION_CANDIDATES);
 
-      const stationId = candidates[0];
-      if (!stationId) {
+      if (candidates.length === 0) {
         this.log.error('No valid NOAA stations found for grid cell.');
         return null;
       }
-      this.log.info(`Station candidates: ${candidates.slice(0, 10).join(', ')}`);
-      this.log.info(`Selected NOAA station: ${stationId}`);
+      this.log.info(`Station candidates: ${candidates.join(', ')}`);
+
+      let selection: StationSelection | null = null;
+      for (const candidate of candidates) {
+        if (this.shuttingDown) {
+          return null;
+        }
+        try {
+          const observation = await this.fetchObservation(candidate);
+          if (!this.isObservationFresh(observation)) {
+            this.log.warn(`Skipping NOAA station ${candidate}: latest observation is stale.`);
+            continue;
+          }
+          selection = { stationId: candidate, observation };
+          break;
+        } catch (err) {
+          const unavailable =
+            err instanceof UnusableObservationError ||
+            (err instanceof NwsHttpError && (err.status === 404 || err.status === 410));
+          if (!unavailable) {
+            throw err;
+          }
+          this.log.warn(`Skipping NOAA station ${candidate}: no usable observation.`);
+        }
+      }
+
+      if (!selection) {
+        this.log.error(
+          `No station among the nearest ${candidates.length} candidates has a fresh observation.`,
+        );
+        return null;
+      }
+      this.log.info(`Selected NOAA station: ${selection.stationId}`);
 
       const cache: PointsCache = {
         latitude,
@@ -406,14 +473,16 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         gridId,
         gridX: gridX as number,
         gridY: gridY as number,
-        stationId,
+        stationId: selection.stationId,
         timestamp: Date.now(),
       };
       writeJsonAtomic(this.log, cacheFile, cache);
 
-      return stationId;
+      return selection;
     } catch (err) {
-      this.log.error('Failed to discover NOAA station:', (err as Error).message);
+      if (!this.shuttingDown) {
+        this.log.error('Failed to discover NOAA station:', (err as Error).message);
+      }
       return null;
     }
   }
@@ -423,6 +492,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     handler: NOAAWeatherAccessory,
     baseRefreshMs: number,
     adaptive: boolean,
+    autoStation?: AutoStationContext,
+    initialObservation: ParsedObservation | null = null,
   ): void {
     if (this.shuttingDown) {
       return;
@@ -438,8 +509,40 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     }
     this.pollingStarted = true;
 
+    let activeStationId = stationId;
+    let pendingObservation = initialObservation;
+    let nextFailoverAttemptAt = 0;
     let unchangedStreak = 0;
     let inFlight = false;
+
+    const tryFailover = async (reason: string): Promise<boolean | null> => {
+      if (
+        !autoStation ||
+        this.shuttingDown ||
+        Date.now() < nextFailoverAttemptAt
+      ) {
+        return null;
+      }
+      nextFailoverAttemptAt = Date.now() + AUTO_FAILOVER_RETRY_MS;
+      this.log.warn(
+        `Auto-selected NOAA station ${activeStationId} ${reason}; looking for a replacement.`,
+      );
+      const replacement = await this.discoverStation(
+        autoStation.latitude,
+        autoStation.longitude,
+        autoStation.cacheFile,
+        activeStationId,
+      );
+      if (!replacement || this.shuttingDown) {
+        return null;
+      }
+      this.log.info(
+        `Switched NOAA station from ${activeStationId} to ${replacement.stationId}.`,
+      );
+      activeStationId = replacement.stationId;
+      nextFailoverAttemptAt = 0;
+      return handler.applyReading(replacement.observation);
+    };
 
     const scheduleNext = (): void => {
       if (this.shuttingDown) {
@@ -468,18 +571,37 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       }
       inFlight = true;
       try {
-        const changed = await this.fetchAndPushObservation(stationId, handler);
+        const observation =
+          pendingObservation ?? await this.fetchObservation(activeStationId);
+        pendingObservation = null;
+        if (this.shuttingDown) {
+          return;
+        }
+        const failoverChanged = !this.isObservationFresh(observation)
+          ? await tryFailover('is stale')
+          : null;
+        const changed = failoverChanged ?? handler.applyReading(observation);
         unchangedStreak = changed ? 0 : unchangedStreak + 1;
       } catch (err) {
         if (!this.shuttingDown) {
-          this.log.error('NOAA observation fetch failed:', (err as Error).message);
-          // A failed poll is not a value change: leave the adaptive streak
-          // alone. Resetting it here snapped a relaxed schedule back to the
-          // fastest polling rate for the entire duration of an NWS outage —
-          // maximum load aimed at a service that is already struggling.
-          // Failed polls also never reach applyReading, so staleness must be
-          // re-evaluated here or an extended outage leaves sensors active.
-          handler.noteObservationFailure();
+          const stationUnavailable =
+            err instanceof UnusableObservationError ||
+            (err instanceof NwsHttpError && (err.status === 404 || err.status === 410));
+          const failoverChanged = stationUnavailable
+            ? await tryFailover('has no usable observation')
+            : null;
+          if (failoverChanged !== null) {
+            unchangedStreak = failoverChanged ? 0 : unchangedStreak + 1;
+          } else {
+            this.log.error('NOAA observation fetch failed:', (err as Error).message);
+            // A failed poll is not a value change: leave the adaptive streak
+            // alone. Resetting it here snapped a relaxed schedule back to the
+            // fastest polling rate for the entire duration of an NWS outage —
+            // maximum load aimed at a service that is already struggling.
+            // Failed polls also never reach applyReading, so staleness must be
+            // re-evaluated here or an extended outage leaves sensors active.
+            handler.noteObservationFailure();
+          }
         }
       } finally {
         inFlight = false;
@@ -496,16 +618,10 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     });
   }
 
-  private async fetchAndPushObservation(
-    stationId: string,
-    handler: NOAAWeatherAccessory,
-  ): Promise<boolean> {
+  private async fetchObservation(stationId: string): Promise<ParsedObservation> {
     const data = await this.client.fetchJson<ObservationResponse>(
       `${NWS_API_BASE}/stations/${encodeURIComponent(stationId)}/observations/latest`,
     );
-    if (this.shuttingDown) {
-      return false;
-    }
 
     const props =
       data && typeof data === 'object' &&
@@ -530,13 +646,20 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
     const observedMs = typeof props.timestamp === 'string' ? Date.parse(props.timestamp) : NaN;
     if (tempC === null && humidity === null) {
-      throw new Error('NOAA observation contained no usable measurements');
+      throw new UnusableObservationError('NOAA observation contained no usable measurements');
     }
-    return handler.applyReading({
+    return {
       temperature: tempC,
       humidity,
       observedAt: Number.isFinite(observedMs) ? observedMs : null,
-    });
+    };
+  }
+
+  private isObservationFresh(observation: ParsedObservation): boolean {
+    return (
+      observation.observedAt === null ||
+      Date.now() - observation.observedAt <= STALE_OBSERVATION_MS
+    );
   }
 
   /** Convert NWS QuantitativeValue to °C, honoring unitCode and QC flag. */
