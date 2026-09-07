@@ -16,26 +16,20 @@ The plugin automatically finds a nearby observation station with current
 readings and fails over if that station stops reporting, or you can point
 it at a specific station.
 
-## What's New in v1.10.3
+## What's New in v1.10.4
 
-- **Temperature and humidity expire independently and on time.** Each
-  measurement has its own persisted freshness clock and deadline timer,
-  so partial, empty, or timestamp-only responses cannot reactivate stale
-  retained values—even with long adaptive polling intervals.
-- **Shutdown is complete.** Active requests and retry sleeps are
-  cancelled, stale timers are cleared, and no polling or discovery timer
-  can be recreated after Homebridge begins shutting down.
-- **Malformed upstream data fails safely.** Optional response shapes,
-  User-Agent contact text, response sizes, interrupted response bodies,
-  direct HomeKit values, and invalid JSON log messages are bounded and
-  validated.
-- **Supply-chain gates are tighter.** Releases must come from protected
-  `main`; lockfile tarballs must match package identities; tests are
-  strictly type-checked; and zizmor was moved off the yanked 1.27.0
-  release.
-- **Test suite.** 129 tests, including randomized property tests and
-  shutdown, freshness, cache-failure, HTTP-stream, and lockfile
-  regression coverage, run across the CI compatibility matrix.
+- **Discovery checks station health.** Up to ten nearby candidates are
+  probed, and only a station with a recent timestamped observation is
+  cached.
+- **Stale stations fail over automatically.** Auto-selected stations are
+  replaced when their data becomes stale, unusable, or unavailable.
+  Failed replacement searches retain the last good values and retry
+  within one hour.
+- **Manual choices stay pinned.** An explicit `stationId` is never
+  switched automatically.
+- **Test suite.** 140 tests cover station selection, failover, bounded API
+  load, adaptive polling, shutdown races, and the existing security and
+  compatibility guarantees.
 
 Earlier releases brought Node 26 and Homebridge 2.x support, verifiable
 npm releases with provenance, SLSA provenance and a signed SBOM, a
