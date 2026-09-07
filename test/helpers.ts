@@ -31,6 +31,7 @@ export function makeFakeLog(): FakeLog {
 /** Build a fetch Response stand-in without depending on undici internals. */
 export function fakeResponse(opts: {
   status?: number;
+  statusText?: string;
   url?: string;
   body?: string;
   headers?: Record<string, string>;
@@ -43,7 +44,7 @@ export function fakeResponse(opts: {
   return {
     ok: status >= 200 && status <= 299,
     status,
-    statusText: String(status),
+    statusText: opts.statusText ?? String(status),
     url: opts.url ?? 'https://api.weather.gov/test',
     headers: { get: (name: string) => headers.get(name.toLowerCase()) ?? null },
     body: bodyText === '' ? null : new Blob([bodyText]).stream(),

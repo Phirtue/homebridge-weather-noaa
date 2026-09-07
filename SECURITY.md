@@ -58,6 +58,30 @@ unless they prefer to remain anonymous.
   plugin's threat model (note: tampered plugin cache files *are* in
   scope — the plugin is expected to handle them safely)
 
+## Threat Model
+
+The plugin protects the privacy of full-precision configured coordinates,
+limits contact-information disclosure to NWS, and protects the integrity
+of HomeKit readings, the availability of the Homebridge process, and the
+npm release path.
+
+- The Homebridge operator and `config.json` are trusted, but values are
+  still validated so mistakes cannot redirect requests or create unsafe
+  timers. `userAgentContact` is sent to NWS on every request and must not
+  contain a password, token, or other secret.
+- Cache files are treated as untrusted input: they must not enable path or
+  URL injection, unbounded reads, or process hangs. A process already able
+  to write as the Homebridge user can still alter cached weather values;
+  defending a host compromised at that privilege level is out of scope.
+- HTTPS certificate validation uses Node.js and the operating system trust
+  store; the plugin does not pin an NWS certificate. NWS response fields
+  are untrusted for URLs, logs, ranges, and timing, while plausible weather
+  measurements are necessarily trusted as the data the product displays.
+- Runtime requests are credential-free GETs to `https://api.weather.gov`.
+  Redirects remain manual and every target is checked before use. Adding
+  cookies, authorization headers, automatic redirects, or another origin
+  changes this security boundary and requires a new review.
+
 ## Safe Harbor
 
 Good-faith security research within the scope above is welcome. We will

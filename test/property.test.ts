@@ -43,10 +43,22 @@ function invoke<T>(target: object, method: string, ...args: unknown[]): T {
   return (target as Record<string, (...a: unknown[]) => T>)[method](...args);
 }
 
-// JSON.parse can never produce NaN or Infinity, so API-sourced numbers are
-// always finite; the generators mirror that reachable domain.
+// JSON.parse can produce Infinity when a numeric exponent overflows (1e400).
+// Finite generators exercise conversion math; separate properties below
+// assert that non-finite and wrong-typed runtime values are rejected.
 const finiteDouble = (min: number, max: number) =>
   fc.double({ min, max, noNaN: true, noDefaultInfinity: true });
+
+const invalidJsonNumber = fc.oneof(
+  fc.string(),
+  fc.boolean(),
+  fc.array(fc.jsonValue()),
+  fc.dictionary(fc.string(), fc.jsonValue()),
+  fc.constant(null),
+  fc.constant(Number.NaN),
+  fc.constant(Number.POSITIVE_INFINITY),
+  fc.constant(Number.NEGATIVE_INFINITY),
+);
 
 describe('withJitter properties', () => {
   it('stays within +/-10% and returns an integer for any delay', () => {
@@ -160,6 +172,14 @@ describe('extractTemperatureC properties', () => {
     );
   });
 
+  it('rejects every non-number or non-finite runtime value', () => {
+    fc.assert(
+      fc.property(invalidJsonNumber, (value) => {
+        expect(extract({ value, unitCode: 'wmoUnit:degC', qualityControl: 'V' })).toBeNull();
+      }),
+    );
+  });
+
   it('rejects every QC flag outside the accepted MADIS set', () => {
     const accepted = new Set(['V', 'C', 'S', 'G', 'Z']);
     fc.assert(
@@ -200,6 +220,14 @@ describe('extractHumidity properties', () => {
         const result = extract({ value, qualityControl: 'V' });
         expect(result).toBeGreaterThanOrEqual(0);
         expect(result).toBeLessThanOrEqual(100);
+      }),
+    );
+  });
+
+  it('rejects every non-number or non-finite runtime value', () => {
+    fc.assert(
+      fc.property(invalidJsonNumber, (value) => {
+        expect(extract({ value, qualityControl: 'V' })).toBeNull();
       }),
     );
   });

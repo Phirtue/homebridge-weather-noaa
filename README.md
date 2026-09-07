@@ -15,8 +15,11 @@ Temperature and humidity sensors for HomeKit, powered by the free
 The plugin finds the observation station closest to your coordinates
 automatically, or you can point it at a specific station.
 
-## What's New in v1.10
+## What's New in v1.10.2
 
+- **Malformed measurements and future timestamps fail safely.** NOAA
+  values must be finite runtime numbers, and an upstream timestamp can
+  no longer move HomeKit's stale-reading clock into the future.
 - **Your location stays yours.** Coordinates are coarsened to about
   1 km before they are sent to NWS or written to disk, and they never
   appear in the Homebridge log, so pasting a log into a bug report no
@@ -30,11 +33,11 @@ automatically, or you can point it at a specific station.
   and oversized-file edge cases.
 - **Node 18 support dropped** (end-of-life since April 2025). Node 20,
   22, 24 and 26 remain supported and CI-tested.
-- **Supply chain tightened.** CI runs under a block-mode egress
-  allowlist like the release pipeline, Dependabot waits 7 days before
-  proposing new releases, and local installs never run dependency
-  scripts.
-- **Test suite.** 101 tests, including randomized property-based tests
+- **Supply chain tightened.** Build tools run without npm publishing
+  authority, lockfiles are verified without downloading another tool,
+  CI and releases use block-mode egress allowlists, and local installs
+  never run dependency scripts.
+- **Test suite.** 105 tests, including randomized property-based tests
   of the parsing and clamping logic, run in every CI matrix cell.
 
 Earlier releases brought Node 26 and Homebridge 2.x support, verifiable
@@ -87,7 +90,7 @@ or add the platform to `config.json` directly.
 | Refresh Interval | `refreshInterval` | No | `15` | Minutes between updates, minimum 5 |
 | NOAA Station ID | `stationId` | No | auto | Overrides discovery, for example `KSEA` |
 | Adaptive Polling | `adaptivePolling` | No | `true` | Slows polling while readings are stable |
-| Contact (User-Agent) | `userAgentContact` | No | none | Email or URL added to the NOAA User-Agent header so NWS can reach you about API issues |
+| Contact (User-Agent) | `userAgentContact` | No | none | Email or URL sent to NWS on every request so they can reach you about API issues; do not enter a secret |
 
 Example `config.json` entry:
 

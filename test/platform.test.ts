@@ -227,9 +227,16 @@ describe('extractTemperatureC', () => {
     }
   });
 
-  it('returns null for absent values', () => {
+  it('rejects absent, non-number, and non-finite values from JSON', () => {
     expect(extract(undefined)).toBeNull();
     expect(extract({ value: null })).toBeNull();
+    expect(extract({ value: '21.5', unitCode: 'wmoUnit:degC' })).toBeNull();
+    expect(extract({ value: true, unitCode: 'wmoUnit:degC' })).toBeNull();
+    expect(extract({ value: Number.NaN, unitCode: 'wmoUnit:degC' })).toBeNull();
+    expect(extract({
+      value: JSON.parse('{"value":1e400}').value,
+      unitCode: 'wmoUnit:degC',
+    })).toBeNull();
   });
 });
 
@@ -377,8 +384,10 @@ describe('extractHumidity', () => {
     expect(extract({ value: 55.5, qualityControl: 'V' })).toBe(55.5);
   });
 
-  it('rejects failed QC and absent values', () => {
+  it('rejects failed QC, absent, non-number, and non-finite values', () => {
     expect(extract({ value: 50, qualityControl: 'X' })).toBeNull();
     expect(extract(undefined)).toBeNull();
+    expect(extract({ value: '50', qualityControl: 'V' })).toBeNull();
+    expect(extract({ value: Number.POSITIVE_INFINITY, qualityControl: 'V' })).toBeNull();
   });
 });

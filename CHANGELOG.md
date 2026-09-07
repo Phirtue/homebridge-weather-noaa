@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.10.2] - 2026-09-06
+
+Focused follow-up to the 1.10 security review. No configuration changes.
+
+### Runtime integrity
+
+- **Malformed NOAA measurements are rejected at runtime.** TypeScript
+  interfaces do not validate JSON, and `JSON.parse` can decode an
+  overflowing number such as `1e400` as `Infinity`. Temperature and
+  humidity now require an actual finite number before conversion or
+  clamping, preventing malformed data from becoming a plausible-looking
+  boundary reading in HomeKit.
+- **Future observation timestamps cannot postpone stale-data detection.**
+  A timestamp ahead of the local clock is clamped to receipt time, so a
+  bad upstream value cannot keep old readings marked active indefinitely.
+- **HTTP status text is sanitized and length-capped** before it reaches a
+  Homebridge error log.
+- Added example-based and property-based regression coverage for
+  non-finite and wrong-typed measurements, JSON numeric overflow, future
+  timestamps, and hostile status text.
+
+### Release security
+
+- **Build tools no longer run with npm publishing authority.** Build,
+  lint, tests, package verification, packing, and SBOM generation happen
+  in a read-only job without OIDC. A minimal second job verifies and
+  publishes the exact transferred tarball without installing dependencies.
+- Replaced the dynamically downloaded lockfile linter with a
+  repository-owned, Node-built-ins-only verifier.
+- Removed the completed one-off SBOM backfill workflow, bounded workflow
+  runtimes, and serialized duplicate release events.
+
+### Security documentation
+
+- Documented the runtime threat model and clarified that the optional
+  User-Agent contact is sent to NWS and must not contain secrets.
+
 ## [1.10.1] - 2026-09-03
 
 Release-infrastructure patch. The plugin code is identical to 1.10.0;
