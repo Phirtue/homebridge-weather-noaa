@@ -12,8 +12,9 @@
 
 Temperature and humidity sensors for HomeKit, powered by the free
 [NOAA / NWS API](https://www.weather.gov/documentation/services-web-api).
-The plugin finds the observation station closest to your coordinates
-automatically, or you can point it at a specific station.
+The plugin automatically finds a nearby observation station with current
+readings and fails over if that station stops reporting, or you can point
+it at a specific station.
 
 ## What's New in v1.10.3
 
@@ -46,9 +47,10 @@ a formal [security policy](./SECURITY.md). See
 
 - **Zero runtime dependencies.** Built on native `fetch`; the published
   package contains only compiled plugin code.
-- **Automatic station discovery** using the NOAA points and gridpoints
-  APIs, cached for 30 days and retried with backoff when the network is
-  down at boot.
+- **Automatic station discovery and failover** using the NOAA points and
+  gridpoints APIs. Discovery probes up to ten nearby candidates for a
+  current timestamped observation; auto-selected stations are replaced
+  if they become stale or unavailable.
 - **Adaptive polling** that stretches the refresh interval up to 4x when
   readings are stable and snaps back on any change.
 - **Persistent readings.** HomeKit shows the last known values
@@ -111,7 +113,9 @@ Two accessories appear in HomeKit under "NOAA Weather":
 
 ## Notes
 
-- Data comes from the NOAA observation station nearest your coordinates.
+- Data comes from the first currently reporting station among up to ten
+  nearby NOAA candidates. Auto-selected stations fail over when their
+  observation is more than two hours old or becomes unavailable.
 - Coordinates are rounded to 2 decimal places (roughly 1 km) before
   they are used. NWS resolves them to a 2.5 km grid cell, so this
   selects the same station in practice while keeping your exact

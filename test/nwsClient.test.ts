@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { NwsClient, describeUrl, withJitter } from '../src/nwsClient.js';
+import { NwsClient, NwsHttpError, describeUrl, withJitter } from '../src/nwsClient.js';
 import { fakeResponse, makeFakeLog } from './helpers.js';
 
 const URL_OK = 'https://api.weather.gov/points/47.6204,-122.3494';
@@ -126,7 +126,10 @@ describe('fetchJson', () => {
     vi.stubGlobal('fetch', fetchMock);
     const { client } = makeClient();
 
-    await expect(client.fetchJson(URL_OK)).rejects.toThrow(/NOAA API 404/);
+    const err = await client.fetchJson(URL_OK).catch((error: Error) => error);
+    expect(err).toBeInstanceOf(NwsHttpError);
+    expect((err as NwsHttpError).status).toBe(404);
+    expect((err as Error).message).toMatch(/NOAA API 404/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(client.metrics.apiFailures).toBe(1);
   });

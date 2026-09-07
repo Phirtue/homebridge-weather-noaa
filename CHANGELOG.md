@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Automatic discovery now probes up to the ten nearest NOAA stations and
+  selects the first station with a timestamped, usable observation less
+  than two hours old instead of blindly caching the first candidate.
+- Auto-selected stations now fail over when their latest observation
+  becomes stale, unusable, or unavailable. Successful replacements are
+  cached immediately; failed replacement searches retain the last good
+  values and retry within an hour regardless of the adaptive polling
+  interval. Explicitly configured `stationId` values remain pinned.
+
 ## [1.10.3] - 2026-09-06
 
 ### Runtime robustness

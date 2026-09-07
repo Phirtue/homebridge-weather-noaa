@@ -322,6 +322,171 @@ describe('discovery-blocked boot', () => {
   });
 });
 
+describe('healthy station selection', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const pointBody = JSON.stringify({
+    properties: { gridId: 'SEW', gridX: 138, gridY: 80 },
+  });
+  const stationsBody = (...stationIds: string[]) => JSON.stringify({
+    features: stationIds.map((stationIdentifier) => ({ properties: { stationIdentifier } })),
+  });
+  const observationBody = (timestamp: string, temperature = 14) => JSON.stringify({
+    properties: {
+      timestamp,
+      temperature: { value: temperature, unitCode: 'wmoUnit:degC', qualityControl: 'V' },
+      relativeHumidity: { value: 82, unitCode: 'wmoUnit:percent', qualityControl: 'V' },
+    },
+  });
+
+  it('skips a stale nearest station and caches the next fresh candidate', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-selection-test-'));
+    const cacheFile = path.join(dir, 'points.json');
+    try {
+      const fetchMock = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/points/')) {
+          return new Response(pointBody, { status: 200 });
+        }
+        if (url.includes('/gridpoints/')) {
+          return new Response(stationsBody('D2629', 'KPAE'), { status: 200 });
+        }
+        if (url.includes('/stations/D2629/')) {
+          return new Response(observationBody('2026-09-01T18:00:00Z', 18.89), { status: 200 });
+        }
+        return new Response(observationBody('2026-09-07T15:20:00Z'), { status: 200 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const { platform, log } = makePlatform(VALID);
+
+      const selection = await invoke<Promise<{ stationId: string } | null>>(
+        platform, 'discoverStation', 47.62, -122.35, cacheFile,
+      );
+
+      expect(selection?.stationId).toBe('KPAE');
+      expect(JSON.parse(fs.readFileSync(cacheFile, 'utf8')).stationId).toBe('KPAE');
+      expect(log.messages.some((m) => m.includes('D2629') && m.includes('stale'))).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds station probes to the nearest ten candidates', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const candidates = Array.from({ length: 11 }, (_, i) => `D${String(i).padStart(4, '0')}`);
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/points/')) {
+        return new Response(pointBody, { status: 200 });
+      }
+      if (url.includes('/gridpoints/')) {
+        return new Response(stationsBody(...candidates), { status: 200 });
+      }
+      return new Response(observationBody('2026-09-01T18:00:00Z'), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+
+    const selection = await invoke<Promise<unknown>>(
+      platform, 'discoverStation', 47.62, -122.35, '/nonexistent/points.json',
+    );
+
+    expect(selection).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(12); // points + station list + 10 probes
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes(candidates[10]!))).toBe(false);
+  });
+
+  it('skips a missing station without retrying it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/points/')) {
+        return new Response(pointBody, { status: 200 });
+      }
+      if (url.includes('/gridpoints/')) {
+        return new Response(stationsBody('D2629', 'KPAE'), { status: 200 });
+      }
+      if (url.includes('/stations/D2629/')) {
+        return new Response('', { status: 404 });
+      }
+      return new Response(observationBody('2026-09-07T15:20:00Z'), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+
+    const selection = await invoke<Promise<{ stationId: string } | null>>(
+      platform, 'discoverStation', 47.62, -122.35, '/nonexistent/points.json',
+    );
+
+    expect(selection?.stationId).toBe('KPAE');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not select a station whose observation has no valid timestamp', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/points/')) {
+        return new Response(pointBody, { status: 200 });
+      }
+      if (url.includes('/gridpoints/')) {
+        return new Response(stationsBody('D2629', 'KPAE'), { status: 200 });
+      }
+      if (url.includes('/stations/D2629/')) {
+        return new Response(JSON.stringify({
+          properties: {
+            temperature: { value: 18.89, unitCode: 'wmoUnit:degC' },
+          },
+        }), { status: 200 });
+      }
+      return new Response(observationBody('2026-09-07T15:20:00Z'), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+
+    const selection = await invoke<Promise<{ stationId: string } | null>>(
+      platform, 'discoverStation', 47.62, -122.35, '/nonexistent/points.json',
+    );
+
+    expect(selection?.stationId).toBe('KPAE');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not fan out probes during a general network failure', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/points/')) {
+        return new Response(pointBody, { status: 200 });
+      }
+      if (url.includes('/gridpoints/')) {
+        return new Response(stationsBody('D2629', 'KPAE'), { status: 200 });
+      }
+      throw new Error('network unavailable');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+
+    const selection = await invoke<Promise<unknown>>(
+      platform, 'discoverStation', 47.62, -122.35, '/nonexistent/points.json',
+    );
+
+    expect(selection).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/stations/KPAE/')))
+      .toBe(false);
+  });
+});
+
 describe('startPolling', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -474,6 +639,285 @@ describe('startPolling', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect((handler as unknown as { noteObservationFailure: ReturnType<typeof vi.fn> })
       .noteObservationFailure).not.toHaveBeenCalled();
+  });
+
+  it('does not mutate accessory state when shutdown interrupts replacement discovery', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    let resolvePoint: ((response: Response) => void) | undefined;
+    const pendingPoint = new Promise<Response>((resolve) => {
+      resolvePoint = resolve;
+    });
+    const stale = JSON.stringify({
+      properties: {
+        timestamp: '2026-09-01T18:00:00Z',
+        temperature: { value: 18.89, unitCode: 'wmoUnit:degC' },
+      },
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/stations/D2629/')) {
+        return new Response(stale, { status: 200 });
+      }
+      if (url.includes('/points/')) {
+        return pendingPoint;
+      }
+      throw new Error('unexpected request');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+    const handler = makeHandler();
+
+    invoke(
+      platform,
+      'startPolling',
+      'D2629',
+      handler,
+      BASE_MS,
+      false,
+      { latitude: 47.62, longitude: -122.35, cacheFile: '/unused' },
+    );
+    for (let i = 0; i < 10 && fetchMock.mock.calls.length < 2; i++) {
+      await Promise.resolve();
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    invoke(platform, 'shutdown');
+    resolvePoint?.(new Response(JSON.stringify({
+      properties: { gridId: 'SEW', gridX: 138, gridY: 80 },
+    }), { status: 200 }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    const mock = handler as unknown as {
+      applyReading: ReturnType<typeof vi.fn>;
+      noteObservationFailure: ReturnType<typeof vi.fn>;
+    };
+    expect(mock.applyReading).not.toHaveBeenCalled();
+    expect(mock.noteObservationFailure).not.toHaveBeenCalled();
+  });
+
+  it('replaces a stale auto-selected station with a fresh candidate', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-failover-test-'));
+    const cacheFile = path.join(dir, 'points.json');
+    try {
+      const pointBody = JSON.stringify({
+        properties: { gridId: 'SEW', gridX: 138, gridY: 80 },
+      });
+      const stationsBody = JSON.stringify({
+        features: [
+          { properties: { stationIdentifier: 'D2629' } },
+          { properties: { stationIdentifier: 'KPAE' } },
+        ],
+      });
+      const stale = JSON.stringify({
+        properties: {
+          timestamp: '2026-09-01T18:00:00Z',
+          temperature: { value: 18.89, unitCode: 'wmoUnit:degC' },
+        },
+      });
+      const fresh = JSON.stringify({
+        properties: {
+          timestamp: '2026-09-07T15:20:00Z',
+          temperature: { value: 14, unitCode: 'wmoUnit:degC' },
+        },
+      });
+      const fetchMock = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/stations/D2629/')) {
+          return new Response(stale, { status: 200 });
+        }
+        if (url.includes('/points/')) {
+          return new Response(pointBody, { status: 200 });
+        }
+        if (url.includes('/gridpoints/')) {
+          return new Response(stationsBody, { status: 200 });
+        }
+        return new Response(fresh, { status: 200 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const { platform, log } = makePlatform(VALID);
+      const handler = makeHandler();
+
+      invoke(
+        platform,
+        'startPolling',
+        'D2629',
+        handler,
+        BASE_MS,
+        false,
+        { latitude: 47.62, longitude: -122.35, cacheFile },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      const apply = (handler as unknown as {
+        applyReading: ReturnType<typeof vi.fn>;
+      }).applyReading;
+      expect(apply).toHaveBeenCalledTimes(1);
+      expect(apply.mock.calls[0]?.[0].temperature).toBe(14);
+      expect(JSON.parse(fs.readFileSync(cacheFile, 'utf8')).stationId).toBe('KPAE');
+      expect(log.messages.some((m) => m.includes('Switched NOAA station from D2629 to KPAE')))
+        .toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never auto-switches an explicitly configured station', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const stale = JSON.stringify({
+      properties: {
+        timestamp: '2026-09-01T18:00:00Z',
+        temperature: { value: 18.89, unitCode: 'wmoUnit:degC' },
+      },
+    });
+    const fetchMock = vi.fn(async () => new Response(stale, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform, log } = makePlatform({ ...VALID, stationId: 'D2629' });
+    const handler = makeHandler();
+
+    invoke(platform, 'startPolling', 'D2629', handler, BASE_MS, false);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(log.messages.some((m) => m.includes('looking for a replacement'))).toBe(false);
+  });
+
+  it('fails over when an auto-selected station disappears', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-missing-station-test-'));
+    try {
+      const fetchMock = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/stations/D2629/')) {
+          return new Response('', { status: 404 });
+        }
+        if (url.includes('/points/')) {
+          return new Response(JSON.stringify({
+            properties: { gridId: 'SEW', gridX: 138, gridY: 80 },
+          }), { status: 200 });
+        }
+        if (url.includes('/gridpoints/')) {
+          return new Response(JSON.stringify({
+            features: [
+              { properties: { stationIdentifier: 'D2629' } },
+              { properties: { stationIdentifier: 'KPAE' } },
+            ],
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          properties: {
+            timestamp: '2026-09-07T15:20:00Z',
+            temperature: { value: 14, unitCode: 'wmoUnit:degC' },
+          },
+        }), { status: 200 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const { platform } = makePlatform(VALID);
+      const handler = makeHandler();
+
+      invoke(
+        platform,
+        'startPolling',
+        'D2629',
+        handler,
+        BASE_MS,
+        false,
+        {
+          latitude: 47.62,
+          longitude: -122.35,
+          cacheFile: path.join(dir, 'points.json'),
+        },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect((handler as unknown as { applyReading: ReturnType<typeof vi.fn> }).applyReading)
+        .toHaveBeenCalledWith(expect.objectContaining({ temperature: 14 }));
+      expect((handler as unknown as {
+        noteObservationFailure: ReturnType<typeof vi.fn>;
+      }).noteObservationFailure).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('limits unsuccessful replacement searches to once per hour', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const stale = JSON.stringify({
+      properties: {
+        timestamp: '2026-09-01T18:00:00Z',
+        temperature: { value: 18.89, unitCode: 'wmoUnit:degC' },
+      },
+    });
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/points/')) {
+        return new Response(JSON.stringify({
+          properties: { gridId: 'SEW', gridX: 138, gridY: 80 },
+        }), { status: 200 });
+      }
+      if (url.includes('/gridpoints/')) {
+        return new Response(JSON.stringify({
+          features: [{ properties: { stationIdentifier: 'D2629' } }],
+        }), { status: 200 });
+      }
+      return new Response(stale, { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform, log } = makePlatform(VALID);
+    const handler = makeHandler();
+
+    invoke(
+      platform,
+      'startPolling',
+      'D2629',
+      handler,
+      24 * 60 * 60 * 1000,
+      true,
+      { latitude: 47.62, longitude: -122.35, cacheFile: '/unused' },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(59 * 60 * 1000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(60 * 1000 + 1);
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(log.messages.filter((m) => m.includes('looking for a replacement'))).toHaveLength(2);
+    const mock = handler as unknown as {
+      applyReading: ReturnType<typeof vi.fn>;
+      noteObservationFailure: ReturnType<typeof vi.fn>;
+    };
+    expect(mock.applyReading).not.toHaveBeenCalled();
+    expect(mock.noteObservationFailure).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses a probed initial observation without another request', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+    const handler = makeHandler();
+    const initial = { temperature: 14, humidity: 82, observedAt: Date.now() };
+
+    invoke(
+      platform,
+      'startPolling',
+      'KPAE',
+      handler,
+      BASE_MS,
+      false,
+      { latitude: 47.62, longitude: -122.35, cacheFile: '/unused' },
+      initial,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((handler as unknown as { applyReading: ReturnType<typeof vi.fn> }).applyReading)
+      .toHaveBeenCalledWith(initial);
   });
 });
 

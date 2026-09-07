@@ -35,7 +35,7 @@ function clampHumidity(value: number): number {
  * (AWOS sites do this routinely) and HomeKit should not present the last
  * reading as current.
  */
-const STALE_OBSERVATION_MS = 2 * 60 * 60 * 1000;
+export const STALE_OBSERVATION_MS = 2 * 60 * 60 * 1000;
 
 interface WeatherReading {
   temperature: number | null;

@@ -40,6 +40,17 @@ export function withJitter(ms: number): number {
   return Math.round(ms * (0.9 + Math.random() * 0.2));
 }
 
+/** Non-retryable HTTP response, exposed so station discovery can skip a 404. */
+export class NwsHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'NwsHttpError';
+  }
+}
+
 /**
  * Minimal HTTP client for the NWS API built on native fetch.
  *
@@ -185,7 +196,10 @@ export class NwsClient {
         const status = res.statusText
           ? `${res.status} ${sanitizeForLog(res.statusText, 64)}`
           : String(res.status);
-        throw new Error(`NOAA API ${status} for ${describeUrl(target)}`);
+        throw new NwsHttpError(
+          res.status,
+          `NOAA API ${status} for ${describeUrl(target)}`,
+        );
       } catch (err) {
         if (this.shuttingDown) {
           throw new Error('NOAA client is shut down', { cause: err });
