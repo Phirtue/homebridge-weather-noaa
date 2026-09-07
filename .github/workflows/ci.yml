@@ -14,6 +14,7 @@ jobs:
   build-test:
     name: Node ${{ matrix.node-version }} + Homebridge ${{ matrix.homebridge-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     strategy:
       matrix:
@@ -57,9 +58,11 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       # Reject lockfile entries that resolve anywhere other than the npm
-      # registry over https (defends against lockfile-poisoning PRs).
+      # registry over HTTPS. The verifier uses Node built-ins only: fetching
+      # a linter with npx before validating the lockfile would introduce an
+      # unreviewed dependency at the exact boundary this step protects.
       - name: Lint lockfile
-        run: npx lockfile-lint@5.0.0 --path package-lock.json --allowed-hosts npm --validate-https
+        run: node scripts/verify-lockfile.mjs
 
       # --ignore-scripts keeps dev-dependency lifecycle scripts from running;
       # lint and build are invoked explicitly below. npm ci only: the
