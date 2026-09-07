@@ -488,7 +488,11 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
   /** Convert NWS QuantitativeValue to °C, honoring unitCode and QC flag. */
   private extractTemperatureC(qv: QuantitativeValue | undefined): number | null {
-    if (!qv || qv.value === null || qv.value === undefined) {
+    // TypeScript describes the expected schema, but JSON.parse enforces no
+    // runtime types and can decode an overflowing number (such as 1e400) as
+    // Infinity. Reject before conversion so a malformed API value cannot
+    // become a plausible-looking clamped HomeKit reading.
+    if (!qv || typeof qv.value !== 'number' || !Number.isFinite(qv.value)) {
       return null;
     }
     if (qv.qualityControl && !ACCEPTABLE_QC.has(qv.qualityControl)) {
@@ -520,7 +524,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   }
 
   private extractHumidity(qv: QuantitativeValue | undefined): number | null {
-    if (!qv || qv.value === null || qv.value === undefined) {
+    if (!qv || typeof qv.value !== 'number' || !Number.isFinite(qv.value)) {
       return null;
     }
     if (qv.qualityControl && !ACCEPTABLE_QC.has(qv.qualityControl)) {

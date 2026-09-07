@@ -150,9 +150,17 @@ export class NOAAWeatherAccessory {
   applyReading(reading: WeatherReading): boolean {
     let changed = false;
 
-    this.lastObservationAppliedMs = reading.observedAt ?? Date.now();
-    if (reading.observedAt !== null && reading.observedAt !== undefined) {
-      this.setStatusActive(Date.now() - reading.observedAt <= STALE_OBSERVATION_MS);
+    const now = Date.now();
+    // A network timestamp must never move the local staleness clock into
+    // the future. Clamp any future value to receipt time; also treat a
+    // non-finite runtime value as absent despite the TypeScript contract.
+    const observedAt =
+      typeof reading.observedAt === 'number' && Number.isFinite(reading.observedAt)
+        ? Math.min(reading.observedAt, now)
+        : null;
+    this.lastObservationAppliedMs = observedAt ?? now;
+    if (observedAt !== null) {
+      this.setStatusActive(now - observedAt <= STALE_OBSERVATION_MS);
     }
 
     if (reading.temperature !== null) {

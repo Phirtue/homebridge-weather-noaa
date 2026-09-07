@@ -1,5 +1,7 @@
 import type { Logging } from 'homebridge';
 
+import { sanitizeForLog } from './sanitize.js';
+
 /** Base URL for all NWS API requests. Redirects leaving this origin are rejected. */
 export const NWS_API_BASE = 'https://api.weather.gov';
 
@@ -152,7 +154,9 @@ export class NwsClient {
         // No apiFailures++ here: the catch below counts this throw, and
         // incrementing in both places double-counted non-retryable errors.
         this.discardBody(res);
-        const status = res.statusText ? `${res.status} ${res.statusText}` : String(res.status);
+        const status = res.statusText
+          ? `${res.status} ${sanitizeForLog(res.statusText, 64)}`
+          : String(res.status);
         throw new Error(`NOAA API ${status} for ${describeUrl(target)}`);
       } catch (err) {
         const isAbort = (err as { name?: string })?.name === 'AbortError';

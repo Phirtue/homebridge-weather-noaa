@@ -46,7 +46,7 @@
       },
       "userAgentContact": {
         "title": "Contact (User-Agent)",
-        "description": "Optional contact (email or URL) included in the NOAA User-Agent header so NWS can reach you about API issues. Recommended by NWS.",
+        "description": "Optional email or URL sent to NWS in every request's User-Agent header so they can reach you about API issues. Do not enter a password, token, or other secret. Recommended by NWS.",
         "type": "string",
         "required": false,
         "maxLength": 200

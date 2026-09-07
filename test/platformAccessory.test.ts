@@ -162,6 +162,28 @@ describe('NOAAWeatherAccessory', () => {
   describe('staleness', () => {
     const HOUR = 60 * 60 * 1000;
 
+    it('clamps a future network timestamp so later failures still become stale', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-17T12:00:00Z'));
+      const h = makeHarness(dir);
+      const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+      acc.applyReading({
+        temperature: 20,
+        humidity: 50,
+        observedAt: new Date('2099-01-01T00:00:00Z').getTime(),
+      });
+      h.temp.updateCharacteristic.mockClear();
+
+      vi.setSystemTime(new Date('2026-07-17T14:00:01Z'));
+      acc.noteObservationFailure();
+      expect(h.temp.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, false);
+      expect(h.humidity.updateCharacteristic)
+        .toHaveBeenCalledWith(Characteristic.StatusActive, false);
+      vi.useRealTimers();
+    });
+
     it('marks sensors inactive when the observation is older than 2 hours', () => {
       const h = makeHarness(dir);
       const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');

@@ -110,6 +110,19 @@ describe('fetchJson', () => {
     expect(client.metrics.apiFailures).toBe(1);
   });
 
+  it('sanitizes and bounds the server-controlled status text in errors', async () => {
+    const statusText = `Bad\r\n[error] forged\u001b[31m${'x'.repeat(100)}`;
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      fakeResponse({ url: URL_OK, status: 418, statusText }),
+    ));
+    const { client } = makeClient();
+
+    const err = await client.fetchJson(URL_OK).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).not.toMatch(/[\r\n\u001b]/);
+    expect((err as Error).message).not.toContain('x'.repeat(65));
+  });
+
   it('redacts coordinates from error messages', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => fakeResponse({ url: URL_OK, status: 404 })));
     const { client } = makeClient();
