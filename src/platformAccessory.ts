@@ -9,6 +9,8 @@ const TEMP_SUBTYPE = 'noaa-temperature';
 const HUMIDITY_SUBTYPE = 'noaa-humidity';
 const CHANGE_EPSILON_TEMP = 0.05;
 const CHANGE_EPSILON_HUMIDITY = 0.5;
+const CACHE_FRESHNESS_WRITE_INTERVAL_MS = 60 * 60 * 1000;
+const STATUS_UPDATE_RETRY_MS = 60 * 1000;
 
 /**
  * HomeKit's CurrentTemperature characteristic accepts -270..100 °C. Values
@@ -20,6 +22,10 @@ const TEMP_MAX_C = 100;
 
 function clampTemperature(value: number): number {
   return Math.max(TEMP_MIN_C, Math.min(TEMP_MAX_C, value));
+}
+
+function clampHumidity(value: number): number {
+  return Math.max(0, Math.min(100, value));
 }
 
 /**
@@ -38,21 +44,28 @@ interface WeatherReading {
   observedAt?: number | null;
 }
 
+interface CachedWeatherReading {
+  temperature: number | null;
+  humidity: number | null;
+  temperatureObservedAt: number | null;
+  humidityObservedAt: number | null;
+}
+
 export class NOAAWeatherAccessory {
   private readonly temperatureService: Service;
   private readonly humidityService: Service;
   private readonly cacheFile: string;
   private last: WeatherReading = { temperature: null, humidity: null };
-  private statusActive = true;
-
-  /**
-   * When the last applied observation was taken (falls back to apply time
-   * if NWS omits the timestamp). Initialized to boot time: a boot from
-   * cache where no poll ever succeeds must eventually go inactive rather
-   * than presenting cached readings as current forever. In-memory only;
-   * observation timestamps are deliberately not persisted.
-   */
-  private lastObservationAppliedMs = Date.now();
+  private persistedTemperature: number | null = null;
+  private persistedHumidity: number | null = null;
+  private persistedTemperatureObservedAt: number | null = null;
+  private persistedHumidityObservedAt: number | null = null;
+  private temperatureObservedAt: number | null = null;
+  private humidityObservedAt: number | null = null;
+  private temperatureActive: boolean | null = null;
+  private humidityActive: boolean | null = null;
+  private staleTimer: NodeJS.Timeout | null = null;
+  private shuttingDown = false;
 
   constructor(
     private readonly platform: NOAAWeatherPlatform,
@@ -67,7 +80,17 @@ export class NOAAWeatherAccessory {
       .setCharacteristic(this.platform.Characteristic.SerialNumber, 'noaa-weather')
       .setCharacteristic(this.platform.Characteristic.FirmwareRevision, pluginVersion);
 
-    this.last = this.readCache();
+    const cached = this.readCache();
+    this.last = {
+      temperature: cached.temperature,
+      humidity: cached.humidity,
+    };
+    this.temperatureObservedAt = cached.temperatureObservedAt;
+    this.humidityObservedAt = cached.humidityObservedAt;
+    this.persistedTemperature = cached.temperature;
+    this.persistedHumidity = cached.humidity;
+    this.persistedTemperatureObservedAt = cached.temperatureObservedAt;
+    this.persistedHumidityObservedAt = cached.humidityObservedAt;
 
     this.temperatureService =
       this.accessory.getServiceById(this.platform.Service.TemperatureSensor, TEMP_SUBTYPE)
@@ -96,11 +119,9 @@ export class NOAAWeatherAccessory {
       );
     }
 
-    // Cached readings carry no observation timestamp, so staleness cannot
-    // be judged at boot. Start active; the first live poll (within a
-    // minute) settles it.
-    this.update(this.temperatureService, this.platform.Characteristic.StatusActive, true);
-    this.update(this.humidityService, this.platform.Characteristic.StatusActive, true);
+    const now = Date.now();
+    const statusUpdateFailed = !this.syncStatusActive(now);
+    this.scheduleStaleCheck(now, statusUpdateFailed ? STATUS_UPDATE_RETRY_MS : null);
 
     this.platform.log.info(
       'Initialized HomeKit with cached NOAA readings: ' +
@@ -109,37 +130,118 @@ export class NOAAWeatherAccessory {
   }
 
   /**
-   * Called by the platform when a poll fails outright. applyReading()
-   * evaluates staleness from the observation timestamp, but it only runs
-   * on successful polls; without this hook, an indefinite fetch failure
-   * (WAN down, NWS outage, DNS breakage) would leave the sensors active
-   * while HomeKit presents arbitrarily old readings as current.
+   * Called by the platform when a poll fails outright. The deadline timer
+   * handles normal expiry; this also re-evaluates immediately after long
+   * event-loop suspension or clock changes.
    */
   noteObservationFailure(): void {
-    if (Date.now() - this.lastObservationAppliedMs > STALE_OBSERVATION_MS) {
-      this.setStatusActive(false);
+    this.evaluateStaleness();
+  }
+
+  shutdown(): void {
+    this.shuttingDown = true;
+    if (this.staleTimer) {
+      clearTimeout(this.staleTimer);
+      this.staleTimer = null;
     }
   }
 
-  /**
-   * Mark both sensors active or inactive in HomeKit. A dark station keeps
-   * returning its last observation; without this, automations keyed off
-   * outdoor temperature would act on week-old data presented as current.
-   */
-  private setStatusActive(active: boolean): void {
-    if (active === this.statusActive) {
-      return;
+  private setTemperatureActive(active: boolean): boolean {
+    if (active === this.temperatureActive) {
+      return true;
     }
-    this.statusActive = active;
+    if (!this.update(
+      this.temperatureService,
+      this.platform.Characteristic.StatusActive,
+      active,
+    )) {
+      return false;
+    }
+    this.temperatureActive = active;
     if (active) {
-      this.platform.log.info('Station reporting again; sensors marked active.');
-    } else {
+      this.platform.log.info('Fresh temperature received; temperature sensor marked active.');
+    } else if (this.last.temperature !== null) {
       this.platform.log.warn(
-        'Observation is stale (station may be offline); sensors marked inactive.',
+        'Temperature observation is stale; temperature sensor marked inactive.',
       );
     }
-    this.update(this.temperatureService, this.platform.Characteristic.StatusActive, active);
-    this.update(this.humidityService, this.platform.Characteristic.StatusActive, active);
+    return true;
+  }
+
+  private setHumidityActive(active: boolean): boolean {
+    if (active === this.humidityActive) {
+      return true;
+    }
+    if (!this.update(
+      this.humidityService,
+      this.platform.Characteristic.StatusActive,
+      active,
+    )) {
+      return false;
+    }
+    this.humidityActive = active;
+    if (active) {
+      this.platform.log.info('Fresh humidity received; humidity sensor marked active.');
+    } else if (this.last.humidity !== null) {
+      this.platform.log.warn(
+        'Humidity observation is stale; humidity sensor marked inactive.',
+      );
+    }
+    return true;
+  }
+
+  private syncStatusActive(now: number): boolean {
+    const temperatureShouldBeActive =
+      this.last.temperature !== null &&
+      this.temperatureObservedAt !== null &&
+      now - this.temperatureObservedAt <= STALE_OBSERVATION_MS;
+    const humidityShouldBeActive =
+      this.last.humidity !== null &&
+      this.humidityObservedAt !== null &&
+      now - this.humidityObservedAt <= STALE_OBSERVATION_MS;
+    const temperatureUpdated = this.setTemperatureActive(temperatureShouldBeActive);
+    const humidityUpdated = this.setHumidityActive(humidityShouldBeActive);
+    return temperatureUpdated && humidityUpdated;
+  }
+
+  private evaluateStaleness(now = Date.now()): void {
+    const statusUpdated = this.syncStatusActive(now);
+    this.scheduleStaleCheck(now, statusUpdated ? null : STATUS_UPDATE_RETRY_MS);
+  }
+
+  /**
+   * Expire readings at their actual two-hour deadlines. Poll callbacks
+   * alone are insufficient because supported adaptive intervals can be
+   * much longer than the stale threshold.
+   */
+  private scheduleStaleCheck(now = Date.now(), retryInMs: number | null = null): void {
+    if (this.staleTimer) {
+      clearTimeout(this.staleTimer);
+      this.staleTimer = null;
+    }
+    if (this.shuttingDown) {
+      return;
+    }
+    const deadlines = [
+      this.last.temperature !== null && this.temperatureObservedAt !== null &&
+        this.temperatureObservedAt + STALE_OBSERVATION_MS >= now
+        ? this.temperatureObservedAt + STALE_OBSERVATION_MS
+        : null,
+      this.last.humidity !== null && this.humidityObservedAt !== null &&
+        this.humidityObservedAt + STALE_OBSERVATION_MS >= now
+        ? this.humidityObservedAt + STALE_OBSERVATION_MS
+        : null,
+      retryInMs !== null ? now + retryInMs : null,
+    ].filter((deadline): deadline is number => deadline !== null);
+    if (deadlines.length === 0) {
+      return;
+    }
+    const delay = Math.max(1, Math.min(...deadlines) - now + 1);
+    this.staleTimer = setTimeout(() => {
+      this.staleTimer = null;
+      this.evaluateStaleness();
+    }, delay);
+    this.staleTimer.unref();
   }
 
   /**
@@ -151,6 +253,14 @@ export class NOAAWeatherAccessory {
     let changed = false;
 
     const now = Date.now();
+    const temperature =
+      typeof reading.temperature === 'number' && Number.isFinite(reading.temperature)
+        ? clampTemperature(reading.temperature)
+        : null;
+    const humidity =
+      typeof reading.humidity === 'number' && Number.isFinite(reading.humidity)
+        ? clampHumidity(reading.humidity)
+        : null;
     // A network timestamp must never move the local staleness clock into
     // the future. Clamp any future value to receipt time; also treat a
     // non-finite runtime value as absent despite the TypeScript contract.
@@ -158,13 +268,9 @@ export class NOAAWeatherAccessory {
       typeof reading.observedAt === 'number' && Number.isFinite(reading.observedAt)
         ? Math.min(reading.observedAt, now)
         : null;
-    this.lastObservationAppliedMs = observedAt ?? now;
-    if (observedAt !== null) {
-      this.setStatusActive(now - observedAt <= STALE_OBSERVATION_MS);
-    }
+    const measurementTime = observedAt ?? now;
 
-    if (reading.temperature !== null) {
-      const temperature = clampTemperature(reading.temperature);
+    if (temperature !== null) {
       if (
         this.last.temperature === null ||
         Math.abs(temperature - this.last.temperature) >= CHANGE_EPSILON_TEMP
@@ -177,33 +283,68 @@ export class NOAAWeatherAccessory {
         temperature,
       );
       this.last.temperature = temperature;
+      this.temperatureObservedAt = measurementTime;
     } else {
       this.platform.log.debug('Temperature null; retaining last known value.');
     }
 
-    if (reading.humidity !== null) {
+    if (humidity !== null) {
       if (
         this.last.humidity === null ||
-        Math.abs(reading.humidity - this.last.humidity) >= CHANGE_EPSILON_HUMIDITY
+        Math.abs(humidity - this.last.humidity) >= CHANGE_EPSILON_HUMIDITY
       ) {
         changed = true;
       }
       this.update(
         this.humidityService,
         this.platform.Characteristic.CurrentRelativeHumidity,
-        reading.humidity,
+        humidity,
       );
-      this.last.humidity = reading.humidity;
+      this.last.humidity = humidity;
+      this.humidityObservedAt = measurementTime;
     } else {
       this.platform.log.debug('Humidity null; retaining last known value.');
     }
+    const statusUpdated = this.syncStatusActive(now);
+    this.scheduleStaleCheck(now, statusUpdated ? null : STATUS_UPDATE_RETRY_MS);
 
-    // Persist only when a value actually changed: identical data is not
-    // worth a write+rename cycle against what is often an SD card. The
-    // in-memory value may lead the persisted one by up to the change
-    // epsilon, which is negligible for a restart cache.
-    if (changed && (this.last.temperature !== null || this.last.humidity !== null)) {
-      writeJsonAtomic(this.platform.log, this.cacheFile, this.last);
+    // Compare against the persisted baseline, not only the previous
+    // in-memory sample. Otherwise repeated sub-epsilon changes can drift
+    // arbitrarily far without ever reaching disk.
+    const shouldPersist =
+      this.hasMeaningfulChange(
+        this.last.temperature,
+        this.persistedTemperature,
+        CHANGE_EPSILON_TEMP,
+      ) ||
+      this.hasMeaningfulChange(
+        this.last.humidity,
+        this.persistedHumidity,
+        CHANGE_EPSILON_HUMIDITY,
+      ) ||
+      this.hasNewerFreshness(
+        temperature,
+        this.temperatureObservedAt,
+        this.persistedTemperatureObservedAt,
+      ) ||
+      this.hasNewerFreshness(
+        humidity,
+        this.humidityObservedAt,
+        this.persistedHumidityObservedAt,
+      );
+    if (shouldPersist) {
+      const cache: CachedWeatherReading = {
+        temperature: this.last.temperature,
+        humidity: this.last.humidity,
+        temperatureObservedAt: this.temperatureObservedAt,
+        humidityObservedAt: this.humidityObservedAt,
+      };
+      if (writeJsonAtomic(this.platform.log, this.cacheFile, cache)) {
+        this.persistedTemperature = this.last.temperature;
+        this.persistedHumidity = this.last.humidity;
+        this.persistedTemperatureObservedAt = this.temperatureObservedAt;
+        this.persistedHumidityObservedAt = this.humidityObservedAt;
+      }
     }
 
     if (changed) {
@@ -218,31 +359,72 @@ export class NOAAWeatherAccessory {
     return changed;
   }
 
+  private hasMeaningfulChange(
+    current: number | null,
+    persisted: number | null,
+    epsilon: number,
+  ): boolean {
+    return current !== null && (persisted === null || Math.abs(current - persisted) >= epsilon);
+  }
+
+  private hasNewerFreshness(
+    currentValue: number | null,
+    observedAt: number | null,
+    persistedObservedAt: number | null,
+  ): boolean {
+    return (
+      currentValue !== null &&
+      observedAt !== null &&
+      (
+        persistedObservedAt === null ||
+        observedAt - persistedObservedAt >= CACHE_FRESHNESS_WRITE_INTERVAL_MS
+      )
+    );
+  }
+
   private update(
     service: Service,
     characteristic: Parameters<Service['updateCharacteristic']>[0],
     value: number | boolean,
-  ): void {
+  ): boolean {
     try {
       service.updateCharacteristic(characteristic, value);
+      return true;
     } catch (err) {
       this.platform.log.warn(
         `Failed to update characteristic on ${service.displayName}: ${(err as Error).message}`,
       );
+      return false;
     }
   }
 
-  private readCache(): WeatherReading {
+  private readCache(): CachedWeatherReading {
     if (!fs.existsSync(this.cacheFile)) {
-      return { temperature: null, humidity: null };
+      return {
+        temperature: null,
+        humidity: null,
+        temperatureObservedAt: null,
+        humidityObservedAt: null,
+      };
     }
     try {
-      const parsed = readJsonBounded(this.cacheFile) as Partial<WeatherReading>;
+      const parsed = readJsonBounded(this.cacheFile) as Partial<CachedWeatherReading>;
       const t = typeof parsed.temperature === 'number' && Number.isFinite(parsed.temperature)
         ? clampTemperature(parsed.temperature) : null;
       const h = typeof parsed.humidity === 'number' && Number.isFinite(parsed.humidity)
-        ? Math.max(0, Math.min(100, parsed.humidity)) : null;
-      return { temperature: t, humidity: h };
+        ? clampHumidity(parsed.humidity) : null;
+      const now = Date.now();
+      const temperatureObservedAt =
+        typeof parsed.temperatureObservedAt === 'number' &&
+        Number.isFinite(parsed.temperatureObservedAt)
+          ? Math.min(parsed.temperatureObservedAt, now)
+          : null;
+      const humidityObservedAt =
+        typeof parsed.humidityObservedAt === 'number' &&
+        Number.isFinite(parsed.humidityObservedAt)
+          ? Math.min(parsed.humidityObservedAt, now)
+          : null;
+      return { temperature: t, humidity: h, temperatureObservedAt, humidityObservedAt };
     } catch {
       this.platform.log.warn('Corrupted weather cache - discarding.');
       try {
@@ -250,7 +432,12 @@ export class NOAAWeatherAccessory {
       } catch {
         /* ignore */
       }
-      return { temperature: null, humidity: null };
+      return {
+        temperature: null,
+        humidity: null,
+        temperatureObservedAt: null,
+        humidityObservedAt: null,
+      };
     }
   }
 }

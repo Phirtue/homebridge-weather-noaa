@@ -25,10 +25,13 @@ branch:
 3. Run the full local gate before pushing:
 
    ```bash
+   node scripts/verify-lockfile.mjs
    npm ci
-   npm run lint    # ESLint, zero warnings allowed
-   npm run build   # TypeScript, strict mode
-   npm test        # Vitest unit and property-based tests
+   npm run lint           # ESLint, zero warnings allowed
+   npm run build          # Production TypeScript, strict mode
+   npm run typecheck:test # Test TypeScript, strict mode
+   npm test               # Unit and property-based tests
+   node scripts/verify-pack.mjs
    ```
 
 4. Open a pull request describing what changed and why.

@@ -21,6 +21,7 @@ jobs:
   zizmor:
     name: zizmor
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write # upload SARIF results to code scanning
@@ -54,5 +55,8 @@ jobs:
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
         with:
-          version: 1.27.0
+          # 1.27.0 was yanked for GHSA-f42p-wjw5-97qh (credential
+          # disclosure under debug logging). 1.29.0 is digest-pinned in
+          # this action revision's checked-in version table.
+          version: 1.29.0
           persona: regular

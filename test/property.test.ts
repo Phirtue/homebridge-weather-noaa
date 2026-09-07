@@ -40,7 +40,11 @@ function makePlatform(): NOAAWeatherPlatform {
 
 // Private-method access for focused unit tests.
 function invoke<T>(target: object, method: string, ...args: unknown[]): T {
-  return (target as Record<string, (...a: unknown[]) => T>)[method](...args);
+  const fn = (target as Record<string, ((...a: unknown[]) => T) | undefined>)[method];
+  if (!fn) {
+    throw new Error(`Missing method ${method}`);
+  }
+  return fn.apply(target, args);
 }
 
 // JSON.parse can produce Infinity when a numeric exponent overflows (1e400).

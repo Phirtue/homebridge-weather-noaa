@@ -87,9 +87,9 @@ interface GridpointStationsResponse {
 }
 
 interface QuantitativeValue {
-  value: number | null;
-  unitCode?: string;
-  qualityControl?: string;
+  value?: unknown;
+  unitCode?: unknown;
+  qualityControl?: unknown;
 }
 
 interface ObservationResponse {
@@ -97,7 +97,7 @@ interface ObservationResponse {
     timestamp?: string;
     temperature?: QuantitativeValue;
     relativeHumidity?: QuantitativeValue;
-    presentWeather?: Array<{ weather?: string }>;
+    presentWeather?: unknown;
   };
 }
 
@@ -113,6 +113,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   private assumedCelsiusLogged = false;
   private handler: NOAAWeatherAccessory | null = null;
   private pollingStarted = false;
+  private shuttingDown = false;
 
   constructor(
     public readonly log: Logging,
@@ -144,6 +145,12 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   }
 
   private shutdown(): void {
+    if (this.shuttingDown) {
+      return;
+    }
+    this.shuttingDown = true;
+    this.handler?.shutdown();
+    this.client.shutdown();
     for (const t of this.timers) {
       clearInterval(t);
       clearTimeout(t);
@@ -233,14 +240,21 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     const contactRaw = (this.config as Record<string, unknown>).userAgentContact;
     const home = 'github.com/Phirtue/homebridge-weather-noaa';
     if (typeof contactRaw === 'string' && contactRaw.trim().length > 0) {
-      // eslint-disable-next-line no-control-regex
-      const clean = contactRaw.trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
-      return `homebridge-weather-noaa/${PLUGIN_VERSION} (${home}, ${clean})`;
+      // HTTP field values are ByteStrings in Node. Keep the operator-supplied
+      // contact to printable ASCII so pasted Unicode cannot make Headers
+      // construction reject every NOAA request.
+      const clean = contactRaw.trim().replace(/[^\u0020-\u007e]/g, '').slice(0, 200);
+      if (clean.length > 0) {
+        return `homebridge-weather-noaa/${PLUGIN_VERSION} (${home}, ${clean})`;
+      }
     }
     return `homebridge-weather-noaa/${PLUGIN_VERSION} (${home})`;
   }
 
   private async discoverDevices(): Promise<void> {
+    if (this.shuttingDown) {
+      return;
+    }
     const cfg = this.parseConfig();
     if (!cfg) {
       return;
@@ -275,6 +289,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
     if (!stationId) {
       stationId = await this.discoverStation(cfg.latitude, cfg.longitude, cacheFile);
+      if (this.shuttingDown) {
+        return;
+      }
       if (!stationId) {
         // Same clock as failed polls: readings restored from a previous
         // run go inactive once they age past the staleness threshold.
@@ -315,6 +332,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
    * tracked in this.timers so it never blocks or survives shutdown.
    */
   private scheduleDiscoveryRetry(): void {
+    if (this.shuttingDown) {
+      return;
+    }
     const delayMs = withJitter(this.discoveryRetryMs);
     this.discoveryRetryMs = Math.min(this.discoveryRetryMs * 2, DISCOVERY_RETRY_MAX_MS);
     this.log.warn(
@@ -343,7 +363,11 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       const point = await this.client.fetchJson<PointResponse>(
         `${NWS_API_BASE}/points/${encodeURIComponent(`${latitude},${longitude}`)}`,
       );
-      const props = point.properties ?? {};
+      const props =
+        point && typeof point === 'object' &&
+        point.properties && typeof point.properties === 'object'
+          ? point.properties
+          : {};
       const gridId = props.gridId;
       const gridX = props.gridX;
       const gridY = props.gridY;
@@ -363,7 +387,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         `${NWS_API_BASE}/gridpoints/${encodeURIComponent(gridId)}/${gridX},${gridY}/stations`,
       );
 
-      const candidates = (stations.features ?? [])
+      const features = Array.isArray(stations?.features) ? stations.features : [];
+      const candidates = features
         .map((f) => f?.properties?.stationIdentifier)
         .filter((id): id is string => typeof id === 'string' && STATION_ID_RE.test(id));
 
@@ -399,6 +424,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     baseRefreshMs: number,
     adaptive: boolean,
   ): void {
+    if (this.shuttingDown) {
+      return;
+    }
     // Only one timer chain may exist. Today this cannot trigger
     // (didFinishLaunching fires once and discovery retries stop after
     // success), but a second chain's first colliding tick would hit the
@@ -414,6 +442,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     let inFlight = false;
 
     const scheduleNext = (): void => {
+      if (this.shuttingDown) {
+        return;
+      }
       let mult = 1;
       if (adaptive && unchangedStreak >= ADAPTIVE_GROW_AFTER_UNCHANGED) {
         mult = Math.min(
@@ -432,7 +463,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     };
 
     const tick = async (): Promise<void> => {
-      if (inFlight) {
+      if (inFlight || this.shuttingDown) {
         return;
       }
       inFlight = true;
@@ -440,21 +471,29 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         const changed = await this.fetchAndPushObservation(stationId, handler);
         unchangedStreak = changed ? 0 : unchangedStreak + 1;
       } catch (err) {
-        this.log.error('NOAA observation fetch failed:', (err as Error).message);
-        // A failed poll is not a value change: leave the adaptive streak
-        // alone. Resetting it here snapped a relaxed schedule back to the
-        // fastest polling rate for the entire duration of an NWS outage —
-        // maximum load aimed at a service that is already struggling.
-        // Failed polls also never reach applyReading, so staleness must be
-        // re-evaluated here or an extended outage leaves sensors active.
-        handler.noteObservationFailure();
+        if (!this.shuttingDown) {
+          this.log.error('NOAA observation fetch failed:', (err as Error).message);
+          // A failed poll is not a value change: leave the adaptive streak
+          // alone. Resetting it here snapped a relaxed schedule back to the
+          // fastest polling rate for the entire duration of an NWS outage —
+          // maximum load aimed at a service that is already struggling.
+          // Failed polls also never reach applyReading, so staleness must be
+          // re-evaluated here or an extended outage leaves sensors active.
+          handler.noteObservationFailure();
+        }
       } finally {
         inFlight = false;
-        scheduleNext();
+        if (!this.shuttingDown) {
+          scheduleNext();
+        }
       }
     };
 
-    tick().catch((err) => this.log.error('Initial tick error:', err));
+    tick().catch((err) => {
+      if (!this.shuttingDown) {
+        this.log.error('Initial tick error:', err);
+      }
+    });
   }
 
   private async fetchAndPushObservation(
@@ -464,12 +503,23 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     const data = await this.client.fetchJson<ObservationResponse>(
       `${NWS_API_BASE}/stations/${encodeURIComponent(stationId)}/observations/latest`,
     );
+    if (this.shuttingDown) {
+      return false;
+    }
 
-    const props = data.properties ?? {};
+    const props =
+      data && typeof data === 'object' &&
+      data.properties && typeof data.properties === 'object'
+        ? data.properties
+        : {};
     const tempC = this.extractTemperatureC(props.temperature);
     const humidity = this.extractHumidity(props.relativeHumidity);
+    const weather = Array.isArray(props.presentWeather) ? props.presentWeather : [];
     const conditions =
-      props.presentWeather?.map((w) => w?.weather).filter(Boolean).join(', ') || 'None';
+      weather
+        .map((w) => w && typeof w === 'object' ? (w as { weather?: unknown }).weather : undefined)
+        .filter((value): value is string => typeof value === 'string')
+        .join(', ') || 'None';
 
     // Routine polls log at debug; applyReading logs at info when values
     // change. Free-text fields from the API body are sanitized first.
@@ -478,7 +528,10 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       `humidity=${humidity ?? 'n/a'}% conditions=${sanitizeForLog(conditions, 120)}`,
     );
 
-    const observedMs = props.timestamp ? Date.parse(props.timestamp) : NaN;
+    const observedMs = typeof props.timestamp === 'string' ? Date.parse(props.timestamp) : NaN;
+    if (tempC === null && humidity === null) {
+      throw new Error('NOAA observation contained no usable measurements');
+    }
     return handler.applyReading({
       temperature: tempC,
       humidity,
@@ -495,8 +548,15 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     if (!qv || typeof qv.value !== 'number' || !Number.isFinite(qv.value)) {
       return null;
     }
-    if (qv.qualityControl && !ACCEPTABLE_QC.has(qv.qualityControl)) {
+    if (
+      qv.qualityControl !== undefined && qv.qualityControl !== null &&
+      (typeof qv.qualityControl !== 'string' || !ACCEPTABLE_QC.has(qv.qualityControl))
+    ) {
       this.log.debug(`Rejecting temperature with QC=${sanitizeForLog(qv.qualityControl, 8)}`);
+      return null;
+    }
+    if (qv.unitCode !== undefined && qv.unitCode !== null && typeof qv.unitCode !== 'string') {
+      this.log.warn('Temperature unit is not a string; ignoring reading.');
       return null;
     }
     const unit = (qv.unitCode ?? '').toLowerCase();
@@ -527,7 +587,10 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     if (!qv || typeof qv.value !== 'number' || !Number.isFinite(qv.value)) {
       return null;
     }
-    if (qv.qualityControl && !ACCEPTABLE_QC.has(qv.qualityControl)) {
+    if (
+      qv.qualityControl !== undefined && qv.qualityControl !== null &&
+      (typeof qv.qualityControl !== 'string' || !ACCEPTABLE_QC.has(qv.qualityControl))
+    ) {
       this.log.debug(`Rejecting humidity with QC=${sanitizeForLog(qv.qualityControl, 8)}`);
       return null;
     }

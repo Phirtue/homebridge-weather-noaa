@@ -12,6 +12,7 @@ permissions:
 jobs:
   dependency-review:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       # Block-mode egress control: this job only needs the GitHub API
       # (advisory database queries), so anything else is refused.

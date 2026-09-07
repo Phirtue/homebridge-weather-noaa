@@ -51,6 +51,22 @@ jobs:
         with:
           # No step pushes; do not leave the read-only token on disk.
           persist-credentials: false
+          # The release-source check below needs main's history as well as
+          # the tagged commit. This repository is small enough that avoiding
+          # shallow-history ambiguity is preferable to a custom fetch.
+          fetch-depth: 0
+
+      # Tag immutability prevents replacement after creation; this separate
+      # assertion prevents an administrator from accidentally releasing a
+      # version-bearing commit that never passed through protected main.
+      - name: Verify release commit is on main
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          if ! git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
+            echo "::error::release commit $RELEASE_SHA is not reachable from main"
+            exit 1
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -74,6 +90,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Type-check tests
+        run: npm run typecheck:test
 
       # Last gate before publish: nothing ships without the unit suite
       # passing in the same environment that built the tarball.

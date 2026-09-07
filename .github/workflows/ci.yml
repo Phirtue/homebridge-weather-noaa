@@ -83,6 +83,9 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      - name: Type-check tests
+        run: npm run typecheck:test
+
       - name: Unit tests
         run: npm test
 
@@ -133,7 +136,7 @@ jobs:
             ]
           }
           EOL
-          npx homebridge -U ./homebridge-test -P . > ./homebridge-test/run.log 2>&1 &
+          npx --no-install homebridge -U ./homebridge-test -P . > ./homebridge-test/run.log 2>&1 &
           PID=$!
           sleep 15
           if ! ps -p $PID > /dev/null; then

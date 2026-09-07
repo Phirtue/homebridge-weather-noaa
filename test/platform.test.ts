@@ -35,7 +35,11 @@ function makePlatform(config: Record<string, unknown>): {
 
 // Private-method access for focused unit tests.
 function invoke<T>(platform: NOAAWeatherPlatform, method: string, ...args: unknown[]): T {
-  return (platform as unknown as Record<string, (...a: unknown[]) => T>)[method](...args);
+  const fn = (platform as unknown as Record<string, ((...a: unknown[]) => T) | undefined>)[method];
+  if (!fn) {
+    throw new Error(`Missing method ${method}`);
+  }
+  return fn.apply(platform, args);
 }
 
 const VALID = { latitude: 47.6204, longitude: -122.3494 };
@@ -120,14 +124,25 @@ describe('buildUserAgent', () => {
     expect(ua).toContain('me@example.comX-Injected: 1');
   });
 
-  it('strips other control characters that would make undici reject the header', () => {
+  it('strips C0, DEL, and C1 controls that would make undici reject the header', () => {
     const { platform } = makePlatform({
       ...VALID,
-      userAgentContact: 'me@\u0000example\u007f.com\tx',
+      userAgentContact: 'me@\u0000example\u007f.com\u0085\tx',
     });
     const ua = invoke<string>(platform, 'buildUserAgent');
     expect(ua).toContain('me@example.comx');
     // The result must be a valid header value end to end.
+    expect(() => new Headers({ 'User-Agent': ua })).not.toThrow();
+  });
+
+  it('strips non-ByteString Unicode so the User-Agent remains constructible', () => {
+    const { platform } = makePlatform({
+      ...VALID,
+      userAgentContact: 'Kevin 🌧️ <kevin@example.com>',
+    });
+    const ua = invoke<string>(platform, 'buildUserAgent');
+    expect(ua).toContain('Kevin  <kevin@example.com>');
+    expect(ua).not.toContain('🌧️');
     expect(() => new Headers({ 'User-Agent': ua })).not.toThrow();
   });
 });
@@ -238,6 +253,12 @@ describe('extractTemperatureC', () => {
       unitCode: 'wmoUnit:degC',
     })).toBeNull();
   });
+
+  it('rejects malformed unit and quality-control fields', () => {
+    expect(extract({ value: 21.5, unitCode: 42, qualityControl: 'V' })).toBeNull();
+    expect(extract({ value: 21.5, unitCode: 'wmoUnit:degC', qualityControl: 42 })).toBeNull();
+    expect(extract({ value: 21.5, unitCode: null, qualityControl: null })).toBe(21.5);
+  });
 });
 
 describe('discovery-blocked boot', () => {
@@ -312,9 +333,12 @@ describe('startPolling', () => {
   const makeHandler = (applyResult = false) => ({
     applyReading: vi.fn(() => applyResult),
     noteObservationFailure: vi.fn(),
+    shutdown: vi.fn(),
   }) as unknown as NOAAWeatherAccessory;
 
-  const OBSERVATION_URL_BODY = JSON.stringify({ properties: {} });
+  const OBSERVATION_URL_BODY = JSON.stringify({
+    properties: { temperature: { value: 20, unitCode: 'wmoUnit:degC' } },
+  });
   const BASE_MS = 5 * 60 * 1000;
 
   it('ignores a second invocation so only one timer chain can exist', async () => {
@@ -370,6 +394,86 @@ describe('startPolling', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4); // too early for mult=2
     await vi.advanceTimersByTimeAsync(BASE_MS * 1.1);
     expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it('treats an empty 200 response as a failed observation', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ properties: {} }), { status: 200 }),
+    ));
+    const { platform } = makePlatform(VALID);
+    const handler = makeHandler();
+
+    invoke(platform, 'startPolling', 'KSEA', handler, BASE_MS, false);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const mock = handler as unknown as {
+      applyReading: ReturnType<typeof vi.fn>;
+      noteObservationFailure: ReturnType<typeof vi.fn>;
+    };
+    expect(mock.applyReading).not.toHaveBeenCalled();
+    expect(mock.noteObservationFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not accept a timestamp without any usable measurement', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({
+        properties: { timestamp: new Date().toISOString() },
+      }), { status: 200 }),
+    ));
+    const { platform } = makePlatform(VALID);
+    const handler = makeHandler();
+
+    invoke(platform, 'startPolling', 'KSEA', handler, BASE_MS, false);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const mock = handler as unknown as {
+      applyReading: ReturnType<typeof vi.fn>;
+      noteObservationFailure: ReturnType<typeof vi.fn>;
+    };
+    expect(mock.applyReading).not.toHaveBeenCalled();
+    expect(mock.noteObservationFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores malformed presentWeather when measurements remain usable', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({
+        properties: {
+          temperature: { value: 20, unitCode: 'wmoUnit:degC' },
+          presentWeather: 'not-an-array',
+        },
+      }), { status: 200 }),
+    ));
+    const { platform } = makePlatform(VALID);
+    const handler = makeHandler();
+
+    invoke(platform, 'startPolling', 'KSEA', handler, BASE_MS, false);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((handler as unknown as { applyReading: ReturnType<typeof vi.fn> }).applyReading)
+      .toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry or reschedule an in-flight poll after shutdown', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () =>
+      new Response('', { status: 429, headers: { 'retry-after': '300' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+    const handler = makeHandler();
+
+    invoke(platform, 'startPolling', 'KSEA', handler, BASE_MS, false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    invoke(platform, 'shutdown');
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((handler as unknown as { noteObservationFailure: ReturnType<typeof vi.fn> })
+      .noteObservationFailure).not.toHaveBeenCalled();
   });
 });
 
