@@ -15,30 +15,26 @@ Temperature and humidity sensors for HomeKit, powered by the free
 The plugin finds the observation station closest to your coordinates
 automatically, or you can point it at a specific station.
 
-## What's New in v1.10.2
+## What's New in v1.10.3
 
-- **Malformed measurements and future timestamps fail safely.** NOAA
-  values must be finite runtime numbers, and an upstream timestamp can
-  no longer move HomeKit's stale-reading clock into the future.
-- **Your location stays yours.** Coordinates are coarsened to about
-  1 km before they are sent to NWS or written to disk, and they never
-  appear in the Homebridge log, so pasting a log into a bug report no
-  longer reveals where you live. Existing installs re-run station
-  discovery once after upgrading.
-- **Redirects are checked before they are followed.** No request
-  header, including your optional contact address, can be sent to a
-  host other than `api.weather.gov`.
-- **Cache files must be small regular files**, written with exclusive
-  create and read without following symlinks, closing off planted-file
-  and oversized-file edge cases.
-- **Node 18 support dropped** (end-of-life since April 2025). Node 20,
-  22, 24 and 26 remain supported and CI-tested.
-- **Supply chain tightened.** Build tools run without npm publishing
-  authority, lockfiles are verified without downloading another tool,
-  CI and releases use block-mode egress allowlists, and local installs
-  never run dependency scripts.
-- **Test suite.** 105 tests, including randomized property-based tests
-  of the parsing and clamping logic, run in every CI matrix cell.
+- **Temperature and humidity expire independently and on time.** Each
+  measurement has its own persisted freshness clock and deadline timer,
+  so partial, empty, or timestamp-only responses cannot reactivate stale
+  retained values—even with long adaptive polling intervals.
+- **Shutdown is complete.** Active requests and retry sleeps are
+  cancelled, stale timers are cleared, and no polling or discovery timer
+  can be recreated after Homebridge begins shutting down.
+- **Malformed upstream data fails safely.** Optional response shapes,
+  User-Agent contact text, response sizes, interrupted response bodies,
+  direct HomeKit values, and invalid JSON log messages are bounded and
+  validated.
+- **Supply-chain gates are tighter.** Releases must come from protected
+  `main`; lockfile tarballs must match package identities; tests are
+  strictly type-checked; and zizmor was moved off the yanked 1.27.0
+  release.
+- **Test suite.** 129 tests, including randomized property tests and
+  shutdown, freshness, cache-failure, HTTP-stream, and lockfile
+  regression coverage, run across the CI compatibility matrix.
 
 Earlier releases brought Node 26 and Homebridge 2.x support, verifiable
 npm releases with provenance, SLSA provenance and a signed SBOM, a
