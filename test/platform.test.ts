@@ -946,10 +946,13 @@ describe('startPolling', () => {
     // At most one poll per minute is ever possible; at BASE_MS cadence, none.
     expect(fetchMock.mock.calls.length - afterCooldown).toBeLessThanOrEqual(1);
 
-    // Cadence is back to the base interval: exactly one poll per period.
+    // Cadence is back to the base interval. Over ten periods, ±10% jitter
+    // and phase alignment allow 8–12 polls; the bug produced ~600,000.
     const before = fetchMock.mock.calls.length;
-    await vi.advanceTimersByTimeAsync(BASE_MS * 1.1);
-    expect(fetchMock.mock.calls.length - before).toBe(1);
+    await vi.advanceTimersByTimeAsync(BASE_MS * 10);
+    const polls = fetchMock.mock.calls.length - before;
+    expect(polls).toBeGreaterThanOrEqual(8);
+    expect(polls).toBeLessThanOrEqual(12);
   });
 
   it('never schedules a poll sooner than the one-minute floor', async () => {
