@@ -29,6 +29,42 @@
   forgets to stub it fails instead of passing or failing on real weather.
 - `engines.homebridge` simplified to `^1.8.0 || ^2.0.0`; the
   `^2.0.0-beta.0` clause was redundant once Homebridge 2.0 shipped.
+- **Log sanitizer covers every Unicode format character.** `sanitizeForLog`
+  now strips the whole `Cf` category via a property escape rather than a
+  hand-written range, which had missed the Arabic letter mark (a bidi
+  control), soft hyphen, interlinear annotation controls and the invisible
+  tag block. Lone surrogates are dropped too, and truncation happens on
+  code-point boundaries so it can never split an emoji into a broken pair.
+- **Change detection matches what HomeKit can show.** The "reading changed"
+  thresholds are now the HAP `minStep` of each characteristic (0.1 °C,
+  1 %). HAP-NodeJS rounds every write to that step, so smaller movement
+  was invisible in the Home app yet still reset adaptive polling, wrote
+  the cache and logged "Pushed to HomeKit".
+- A duplicate `NOAAWeather` platform block in a hand-edited `config.json`
+  now logs a clear error naming the problem (both blocks would drive the
+  same accessory and cache files) instead of a generic unhandled-error line.
+- Config warnings (`refreshInterval` clamped, `stationId` invalid) are
+  logged once, not on every discovery retry while the network is down.
+- Boolean, array or object values in numeric config fields are rejected
+  rather than coerced (`true` no longer becomes `1`).
+- A prerelease plugin version presents its release core (`1.12.0`, not
+  `1.12.0-beta.1`) as the HomeKit FirmwareRevision.
+- The hourly `lastSuccess` metric counts only fresh readings; a stale
+  reading from an explicitly configured station is still handed to
+  HomeKit (which marks it inactive) but is no longer reported as a success.
+
+### Fixed
+
+- **`Retry-After` is honoured exactly.** The 429 wait was jittered ±10 %,
+  so the client could retry up to 30 s *before* a 300 s `Retry-After`
+  expired and burn one of its four attempts on a guaranteed second 429.
+  The server's value is now a floor: jitter is applied upward only, and the
+  five-minute cap is re-applied afterwards.
+- A missing cache file is detected from the `open()` result instead of a
+  separate existence check, so a file removed between the two calls is no
+  longer misreported as "Corrupted" (and no longer bumps `cacheResets`).
+- Error messages cap the length of the URL they quote; after a
+  same-origin redirect that URL is the server's `Location` header.
 
 ## [1.11.0] - 2026-09-13
 

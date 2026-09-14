@@ -3,12 +3,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { NOAAWeatherPlatform } from './platform.js';
+import { ParsedObservation, STALE_OBSERVATION_MS } from './poller.js';
 import { readJsonBounded, writeJsonAtomic } from './stationCache.js';
 
 const TEMP_SUBTYPE = 'noaa-temperature';
 const HUMIDITY_SUBTYPE = 'noaa-humidity';
-const CHANGE_EPSILON_TEMP = 0.05;
-const CHANGE_EPSILON_HUMIDITY = 0.5;
+
+/**
+ * Minimum change that counts as a new reading. Set to the HAP `minStep` of
+ * each characteristic (CurrentTemperature 0.1 °C, CurrentRelativeHumidity
+ * 1 %): HAP-NodeJS rounds every write to that step, so a smaller movement
+ * is invisible in the Home app and must not reset adaptive polling, write
+ * the cache, or log "Pushed to HomeKit".
+ */
+const CHANGE_EPSILON_TEMP = 0.1;
+const CHANGE_EPSILON_HUMIDITY = 1;
 const CACHE_FRESHNESS_WRITE_INTERVAL_MS = 60 * 60 * 1000;
 const STATUS_UPDATE_RETRY_MS = 60 * 1000;
 
@@ -29,20 +38,11 @@ function clampHumidity(value: number): number {
 }
 
 /**
- * Observations older than this are treated as stale and the sensors are
- * marked inactive. NWS stations typically report hourly and QC processing
- * can add up to 20 minutes; two hours of silence means the station is dark
- * (AWOS sites do this routinely) and HomeKit should not present the last
- * reading as current.
+ * What applyReading accepts: a poller observation, with the timestamp
+ * optional so a caller that has none (tests, a future manual source) can
+ * omit it and have receipt time used instead.
  */
-export const STALE_OBSERVATION_MS = 2 * 60 * 60 * 1000;
-
-interface WeatherReading {
-  temperature: number | null;
-  humidity: number | null;
-  /** Epoch ms of the observation itself, or null when NWS omits the timestamp. */
-  observedAt?: number | null;
-}
+type WeatherReading = Omit<ParsedObservation, 'observedAt'> & Partial<Pick<ParsedObservation, 'observedAt'>>;
 
 /** On-disk shape. Field names are a compatibility contract with older releases. */
 interface CachedWeatherReading {
@@ -82,6 +82,16 @@ interface SensorChannel {
 /** Model string shown in the Home app before any station has been resolved. */
 const MODEL_UNKNOWN_STATION = 'Weather Station';
 
+/**
+ * HAP FirmwareRevision is expected to be a dotted numeric version; iOS
+ * treats anything else inconsistently. A prerelease build (1.12.0-beta.1)
+ * presents its release core (1.12.0).
+ */
+function firmwareRevision(version: string): string {
+  const core = version.split(/[-+]/, 1)[0] ?? version;
+  return /^\d+(\.\d+){0,2}$/.test(core) ? core : '0.0.0';
+}
+
 export class NOAAWeatherAccessory {
   private readonly temperature: SensorChannel;
   private readonly humidity: SensorChannel;
@@ -102,7 +112,7 @@ export class NOAAWeatherAccessory {
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'NOAA / NWS')
       .setCharacteristic(this.platform.Characteristic.Model, MODEL_UNKNOWN_STATION)
       .setCharacteristic(this.platform.Characteristic.SerialNumber, 'noaa-weather')
-      .setCharacteristic(this.platform.Characteristic.FirmwareRevision, pluginVersion);
+      .setCharacteristic(this.platform.Characteristic.FirmwareRevision, firmwareRevision(pluginVersion));
 
     const cached = this.readCache();
 
@@ -147,9 +157,9 @@ export class NOAAWeatherAccessory {
   }
 
   /**
-   * Called by the platform when a poll fails outright. The deadline timer
-   * handles normal expiry; this also re-evaluates immediately after long
-   * event-loop suspension or clock changes.
+   * Called by the poller when a poll produced nothing usable. The deadline
+   * timer handles normal expiry; this also re-evaluates immediately after
+   * long event-loop suspension or clock changes.
    */
   noteObservationFailure(): void {
     this.evaluateStaleness();
@@ -383,9 +393,6 @@ export class NOAAWeatherAccessory {
       temperatureObservedAt: null,
       humidityObservedAt: null,
     };
-    if (!fs.existsSync(this.cacheFile)) {
-      return empty;
-    }
     try {
       const parsed = readJsonBounded(this.cacheFile) as Partial<CachedWeatherReading>;
       const now = Date.now();
@@ -402,7 +409,10 @@ export class NOAAWeatherAccessory {
         temperatureObservedAt: tAt === null ? null : Math.min(tAt, now),
         humidityObservedAt: hAt === null ? null : Math.min(hAt, now),
       };
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return empty; // first run, or nothing cached yet
+      }
       this.platform.log.warn('Corrupted weather cache - discarding.');
       try {
         fs.unlinkSync(this.cacheFile);

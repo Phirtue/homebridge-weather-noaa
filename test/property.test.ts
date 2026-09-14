@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import { NwsClient, withJitter } from '../src/nwsClient.js';
 import { NOAAWeatherPlatform } from '../src/platform.js';
+import { sanitizeForLog } from '../src/sanitize.js';
 import { STATION_ID_RE } from '../src/stationCache.js';
 import { makeFakeLog } from './helpers.js';
 
@@ -241,14 +242,15 @@ describe('STATION_ID_RE properties', () => {
   it('accepted IDs are URL-inert: uppercase, bounded, no encodable characters', () => {
     // A cached station ID is interpolated into a request path, so anything
     // the regex accepts must pass through encodeURIComponent unchanged.
+    // Generate directly from the regex: with fc.string() fewer than 1% of
+    // samples matched, so the assertions almost never ran.
     fc.assert(
-      fc.property(fc.string(), (s) => {
-        if (STATION_ID_RE.test(s)) {
-          expect(s.length).toBeGreaterThanOrEqual(3);
-          expect(s.length).toBeLessThanOrEqual(8);
-          expect(s).toBe(s.toUpperCase());
-          expect(encodeURIComponent(s)).toBe(s);
-        }
+      fc.property(fc.stringMatching(STATION_ID_RE), (s) => {
+        expect(STATION_ID_RE.test(s)).toBe(true);
+        expect(s.length).toBeGreaterThanOrEqual(3);
+        expect(s.length).toBeLessThanOrEqual(8);
+        expect(s).toBe(s.toUpperCase());
+        expect(encodeURIComponent(s)).toBe(s);
       }),
     );
   });
@@ -261,6 +263,33 @@ describe('STATION_ID_RE properties', () => {
           expect(STATION_ID_RE.test(s)).toBe(false);
         },
       ),
+    );
+  });
+});
+
+describe('sanitizeForLog properties', () => {
+  const forbidden = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u;
+
+  it('leaves no control, format, separator or lone-surrogate code point for any input', () => {
+    fc.assert(
+      fc.property(fc.string({ unit: 'binary' }), fc.integer({ min: 1, max: 200 }), (s, max) => {
+        const out = sanitizeForLog(s, max);
+        expect(forbidden.test(out)).toBe(false);
+        // Cap is in code points (+1 for the ellipsis) and never splits a pair.
+        expect(Array.from(out).length).toBeLessThanOrEqual(max + 1);
+      }),
+    );
+  });
+
+  it('is idempotent and preserves text that was already clean', () => {
+    fc.assert(
+      fc.property(fc.string({ unit: 'grapheme' }), (s) => {
+        const once = sanitizeForLog(s, 1_000);
+        expect(sanitizeForLog(once, 1_000)).toBe(once);
+        if (!forbidden.test(s) && Array.from(s).length <= 1_000) {
+          expect(once).toBe(s);
+        }
+      }),
     );
   });
 });

@@ -1078,6 +1078,205 @@ describe('extractHumidity', () => {
   });
 });
 
+describe('first-run lifecycle', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const pointBody = JSON.stringify({ properties: { gridId: 'SEW', gridX: 138, gridY: 80 } });
+  const stationsBody = JSON.stringify({
+    features: [{ properties: { stationIdentifier: 'KSEA' } }],
+  });
+  const observationBody = JSON.stringify({
+    properties: {
+      timestamp: '2026-09-07T15:20:00Z',
+      temperature: { value: 14, unitCode: 'wmoUnit:degC', qualityControl: 'V' },
+      relativeHumidity: { value: 82, unitCode: 'wmoUnit:percent', qualityControl: 'V' },
+    },
+  });
+
+  const chainableService = () => {
+    const svc: Record<string, unknown> = { updateCharacteristic: vi.fn() };
+    svc.setCharacteristic = vi.fn(() => svc);
+    return svc;
+  };
+  const fakeAccessory = (uuid: string, displayName: string) => ({
+    UUID: uuid,
+    displayName,
+    getService: vi.fn(() => chainableService()),
+    getServiceById: vi.fn(() => chainableService()),
+    addService: vi.fn(() => chainableService()),
+  });
+
+  function makeLifecycleApi(dir: string) {
+    const handlers = new Map<string, () => void>();
+    const registered: unknown[] = [];
+    const unregistered: unknown[] = [];
+    const api = {
+      hap: {
+        Service: {},
+        Characteristic: {},
+        uuid: { generate: (s: string) => `uuid-${s}` },
+      },
+      on: (event: string, cb: () => void) => {
+        handlers.set(event, cb);
+      },
+      user: { persistPath: () => dir },
+      // `new this.api.platformAccessory(...)`: must be constructible.
+      platformAccessory: class {
+        constructor(displayName: string, uuid: string) {
+          return fakeAccessory(uuid, displayName);
+        }
+      },
+      registerPlatformAccessories: vi.fn((_p: string, _n: string, accs: unknown[]) => {
+        registered.push(...accs);
+      }),
+      unregisterPlatformAccessories: vi.fn((_p: string, _n: string, accs: unknown[]) => {
+        unregistered.push(...accs);
+      }),
+    } as unknown as API;
+    return { api, handlers, registered, unregistered };
+  }
+
+  it('creates and registers the accessory, then polls, on a first run with no cache', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
+    try {
+      const fetchMock = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/points/')) {
+          return new Response(pointBody, { status: 200 });
+        }
+        if (url.includes('/gridpoints/')) {
+          return new Response(stationsBody, { status: 200 });
+        }
+        return new Response(observationBody, { status: 200 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const { api, handlers, registered } = makeLifecycleApi(dir);
+      const log = makeFakeLog();
+      const platform = new NOAAWeatherPlatform(
+        log as Logging, { platform: 'NOAAWeather', ...VALID } as PlatformConfig, api,
+      );
+
+      // Drive discovery directly rather than through the didFinishLaunching
+      // handler so the test can await its completion.
+      await invoke<Promise<void>>(platform, 'discoverDevices');
+
+      expect(registered).toHaveLength(1);
+      expect(registered[0]).toMatchObject({ UUID: 'uuid-noaa-weather-unique', displayName: 'NOAA Weather' });
+      expect(log.messages.some((m) => m.includes('Created new NOAA Weather accessory'))).toBe(true);
+      // The probed observation is reused: points + stations + one probe, no extra poll.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      const acc = registered[0] as ReturnType<typeof fakeAccessory>;
+      const info = (acc.getService as ReturnType<typeof vi.fn>).mock.results[0]?.value as {
+        updateCharacteristic: ReturnType<typeof vi.fn>;
+      };
+      expect(info.updateCharacteristic).toHaveBeenCalledWith(undefined, 'NWS Station KSEA');
+      // Both caches now exist with owner-only permissions.
+      expect(fs.existsSync(path.join(dir, 'noaa-points-cache.json'))).toBe(true);
+      expect(fs.existsSync(path.join(dir, 'noaa-weather-last.json'))).toBe(true);
+
+      handlers.get('shutdown')!();
+    } finally {
+      vi.useRealTimers();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes cached accessories that are not the one it owns', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/points/')) {
+          return new Response(pointBody, { status: 200 });
+        }
+        if (url.includes('/gridpoints/')) {
+          return new Response(stationsBody, { status: 200 });
+        }
+        return new Response(observationBody, { status: 200 });
+      }));
+      const { api, handlers, registered, unregistered } = makeLifecycleApi(dir);
+      const platform = new NOAAWeatherPlatform(
+        makeFakeLog() as Logging, { platform: 'NOAAWeather', ...VALID } as PlatformConfig, api,
+      );
+      // Homebridge restores two cached accessories: ours and a leftover
+      // from an older release that used a different UUID.
+      const ours = fakeAccessory('uuid-noaa-weather-unique', 'NOAA Weather');
+      const leftover = fakeAccessory('uuid-legacy', 'Old NOAA Sensor');
+      platform.configureAccessory(ours as unknown as PlatformAccessory);
+      platform.configureAccessory(leftover as unknown as PlatformAccessory);
+
+      await invoke<Promise<void>>(platform, 'discoverDevices');
+
+      expect(registered).toHaveLength(0); // ours was restored, not re-created
+      expect(unregistered).toEqual([leftover]);
+      expect(platform.accessories.has('uuid-legacy')).toBe(false);
+      expect(platform.accessories.has('uuid-noaa-weather-unique')).toBe(true);
+
+      handlers.get('shutdown')!();
+    } finally {
+      vi.useRealTimers();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('shuts down idempotently and stops the hourly metrics timer', () => {
+    vi.useFakeTimers();
+    const { platform, log } = makePlatform(VALID);
+    invoke(platform, 'shutdown');
+    invoke(platform, 'shutdown');
+    // The shutdown metrics line is logged once; the hourly timer no longer fires.
+    const before = log.messages.filter((m) => m.includes('NOAA Platform Metrics')).length;
+    expect(before).toBe(1);
+    vi.advanceTimersByTime(3 * 60 * 60 * 1000);
+    expect(log.messages.filter((m) => m.includes('NOAA Platform Metrics')).length).toBe(1);
+  });
+
+  it('warns when a second platform block is configured in the same process', () => {
+    const api = makeFakeApi();
+    const first = makeFakeLog();
+    const second = makeFakeLog();
+    new NOAAWeatherPlatform(first as Logging, { platform: 'NOAAWeather', ...VALID } as PlatformConfig, api);
+    new NOAAWeatherPlatform(second as Logging, { platform: 'NOAAWeather', ...VALID } as PlatformConfig, api);
+    expect(first.messages.some((m) => m.includes('Another NOAAWeather platform block'))).toBe(false);
+    expect(second.messages.some((m) => m.includes('Another NOAAWeather platform block'))).toBe(true);
+  });
+});
+
+describe('parseConfig memoization and strictness', () => {
+  it('warns about a clamped refreshInterval once, not on every discovery retry', () => {
+    const { platform, log } = makePlatform({ ...VALID, refreshInterval: 1 });
+    invoke(platform, 'parseConfig');
+    invoke(platform, 'parseConfig');
+    invoke(platform, 'parseConfig');
+    expect(log.messages.filter((m) => m.includes('refreshInterval 1 is outside'))).toHaveLength(1);
+  });
+
+  it('does not coerce booleans, arrays or objects into numbers', () => {
+    for (const bad of [true, false, [], [5], {}]) {
+      const { platform } = makePlatform({ ...VALID, refreshInterval: bad });
+      const cfg = invoke<{ baseRefreshMs: number }>(platform, 'parseConfig');
+      expect(cfg.baseRefreshMs).toBe(15 * 60 * 1000); // default, not Number(bad)
+    }
+    const { platform } = makePlatform({ latitude: true, longitude: 0 });
+    expect(invoke(platform, 'parseConfig')).toBeNull();
+  });
+
+  it('still accepts numeric strings from a hand-edited config.json', () => {
+    const { platform } = makePlatform({ latitude: '47.62', longitude: '-122.35', refreshInterval: ' 30 ' });
+    const cfg = invoke<{ latitude: number; baseRefreshMs: number }>(platform, 'parseConfig');
+    expect(cfg.latitude).toBe(47.62);
+    expect(cfg.baseRefreshMs).toBe(30 * 60 * 1000);
+  });
+});
+
 describe('logMetrics', () => {
   afterEach(() => {
     vi.restoreAllMocks();

@@ -91,6 +91,46 @@ describe('NOAAWeatherAccessory', () => {
     expect(info.updateCharacteristic).toHaveBeenLastCalledWith(Characteristic.Model, 'NWS Station KPAE');
   });
 
+  it('presents the release core of a prerelease version as FirmwareRevision', () => {
+    for (const [version, expected] of [
+      ['1.11.1', '1.11.1'],
+      ['1.12.0-beta.1', '1.12.0'],
+      ['2.0.0-rc.3+build.7', '2.0.0'],
+      ['not-a-version', '0.0.0'],
+    ]) {
+      const h = makeHarness(dir);
+      new NOAAWeatherAccessory(h.platform, h.accessory, version as string);
+      const info = (h.accessory.getService as Mock).mock.results[0]?.value as FakeService;
+      expect(info.setCharacteristic).toHaveBeenCalledWith(Characteristic.FirmwareRevision, expected);
+    }
+  });
+
+  it('adds the sensor services on a first run when the accessory has none', () => {
+    const h = makeHarness(dir);
+    (h.accessory.getServiceById as Mock).mockReturnValue(undefined);
+    const added: FakeService[] = [];
+    (h.accessory.addService as Mock).mockImplementation((_svc: unknown, name: string) => {
+      const s = makeService(name);
+      added.push(s);
+      return s;
+    });
+
+    const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+    expect(h.accessory.addService).toHaveBeenCalledWith(
+      Service.TemperatureSensor, 'NOAA Temperature', 'noaa-temperature',
+    );
+    expect(h.accessory.addService).toHaveBeenCalledWith(
+      Service.HumiditySensor, 'NOAA Humidity', 'noaa-humidity',
+    );
+
+    // The freshly added services are the ones that receive readings.
+    acc.applyReading({ temperature: 21, humidity: 40 });
+    expect(added[0]?.updateCharacteristic)
+      .toHaveBeenCalledWith(Characteristic.CurrentTemperature, 21);
+    expect(added[1]?.updateCharacteristic)
+      .toHaveBeenCalledWith(Characteristic.CurrentRelativeHumidity, 40);
+  });
+
   it('survives a failed Model update', () => {
     const h = makeHarness(dir);
     const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
@@ -131,13 +171,25 @@ describe('NOAAWeatherAccessory', () => {
     const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
 
     acc.applyReading({ temperature: 20, humidity: 50 });
-    acc.applyReading({ temperature: 20.04, humidity: 50 });
+    acc.applyReading({ temperature: 20.06, humidity: 50 });
     expect(JSON.parse(fs.readFileSync(cacheFile(), 'utf8')).temperature).toBe(20);
 
-    // Each individual step is below epsilon, but total drift from the
-    // persisted value now exceeds it and must reach disk.
-    acc.applyReading({ temperature: 20.08, humidity: 50 });
-    expect(JSON.parse(fs.readFileSync(cacheFile(), 'utf8')).temperature).toBe(20.08);
+    // Each individual step is below epsilon (0.1 °C, the HAP minStep), but
+    // total drift from the persisted value now exceeds it and must reach disk.
+    acc.applyReading({ temperature: 20.12, humidity: 50 });
+    expect(JSON.parse(fs.readFileSync(cacheFile(), 'utf8')).temperature).toBe(20.12);
+  });
+
+  it('ignores movement below the HAP minStep, which HomeKit could not display anyway', () => {
+    const h = makeHarness(dir);
+    const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+
+    expect(acc.applyReading({ temperature: 20, humidity: 50 })).toBe(true);
+    // 0.05 °C and 0.9 % both round to the previous HAP step: not a change.
+    expect(acc.applyReading({ temperature: 20.05, humidity: 50.9 })).toBe(false);
+    // A full step (or more) in either sensor is a real change.
+    expect(acc.applyReading({ temperature: 20.5, humidity: 50.9 })).toBe(true);
+    expect(acc.applyReading({ temperature: 20.5, humidity: 52 })).toBe(true);
   });
 
   it('retries persistence after a transient cache write failure', () => {
@@ -181,8 +233,9 @@ describe('NOAAWeatherAccessory', () => {
     const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
 
     acc.applyReading({ temperature: Number.NaN, humidity: 150 });
+    // No temperature write at all — not NaN, not a clamped stand-in.
     expect(h.temp.updateCharacteristic)
-      .not.toHaveBeenCalledWith(Characteristic.CurrentTemperature, Number.NaN);
+      .not.toHaveBeenCalledWith(Characteristic.CurrentTemperature, expect.anything());
     expect(h.humidity.updateCharacteristic)
       .toHaveBeenCalledWith(Characteristic.CurrentRelativeHumidity, 100);
   });
