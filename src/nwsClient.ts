@@ -20,14 +20,24 @@ const MAX_RETRIES = 4;
 const MAX_REDIRECTS = 3;
 
 /**
+ * Longest URL fragment an error message may carry. After a same-origin
+ * redirect the request target is the server's Location header, which is
+ * bounded only by undici's header limit; a log line should not be.
+ */
+const MAX_URL_LOG_CHARS = 200;
+
+/**
  * Strip the coordinates from a /points URL before it reaches a log line.
  * The user's coordinates are the most sensitive value this plugin handles;
  * an error message that embeds them ends up in Homebridge logs that get
  * pasted into GitHub issues. Station and grid paths carry only public NWS
- * identifiers and are left intact.
+ * identifiers and are left intact. Output is length-capped.
  */
 export function describeUrl(url: string): string {
-  return url.replace(/\/points\/[^/?#]*/, '/points/<coordinates>');
+  const described = url.replace(/\/points\/[^/?#]*/, '/points/<coordinates>');
+  return described.length > MAX_URL_LOG_CHARS
+    ? `${described.slice(0, MAX_URL_LOG_CHARS)}…`
+    : described;
 }
 
 /**
@@ -38,6 +48,15 @@ export function describeUrl(url: string): string {
  */
 export function withJitter(ms: number): number {
   return Math.round(ms * (0.9 + Math.random() * 0.2));
+}
+
+/**
+ * Randomize a delay to +0..10% only. Used where the delay is a floor the
+ * server set (Retry-After): desynchronize the install base without ever
+ * retrying before the server said the limit clears.
+ */
+export function withUpwardJitter(ms: number): number {
+  return Math.round(ms * (1 + Math.random() * 0.1));
 }
 
 /** Non-retryable HTTP response, exposed so station discovery can skip a 404. */
@@ -166,12 +185,18 @@ export class NwsClient {
           if (attempt >= MAX_RETRIES) {
             break; // exhausted: throw below rather than sleep a backoff first
           }
-          const waitMs = withJitter(this.parseRetryAfter(res.headers.get('retry-after'), backoffMs));
+          // Retry-After is the server's instruction, not a suggestion:
+          // jitter only upward so the retry never lands inside the limit
+          // window it was told about, and re-apply the cap afterwards.
+          const waitMs = Math.min(
+            RETRY_AFTER_CAP_MS,
+            withUpwardJitter(this.parseRetryAfter(res.headers.get('retry-after'), backoffMs)),
+          );
+          this.metrics.retryCount++;
           this.log.warn(`NOAA rate-limited (429). Waiting ${(waitMs / 1000).toFixed(1)}s.`);
           await this.sleep(waitMs);
           backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
           attempt++;
-          this.metrics.retryCount++;
           continue;
         }
 
@@ -181,10 +206,9 @@ export class NwsClient {
             break; // exhausted: throw below rather than sleep a backoff first
           }
           this.metrics.retryCount++;
-          this.log.warn(
-            `NOAA ${res.status}; retrying in ${(backoffMs / 1000).toFixed(1)}s.`,
-          );
-          await this.sleep(withJitter(backoffMs));
+          const waitMs = withJitter(backoffMs);
+          this.log.warn(`NOAA ${res.status}; retrying in ${(waitMs / 1000).toFixed(1)}s.`);
+          await this.sleep(waitMs);
           backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
           attempt++;
           continue;
@@ -220,11 +244,12 @@ export class NwsClient {
             describeUrl(String((err as Error).message ?? 'request failed')),
             120,
           );
+          const waitMs = withJitter(backoffMs);
           this.log.warn(
             `Network error (${isAbort ? 'timeout' : message}); ` +
-            `retrying in ${(backoffMs / 1000).toFixed(1)}s.`,
+            `retrying in ${(waitMs / 1000).toFixed(1)}s.`,
           );
-          await this.sleep(withJitter(backoffMs));
+          await this.sleep(waitMs);
           backoffMs = Math.min(backoffMs * 2, BACKOFF_CEILING_MS);
           attempt++;
           continue;

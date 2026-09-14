@@ -22,6 +22,25 @@ describe('sanitizeForLog', () => {
     expect(sanitizeForLog('line1\u2028[error] forged\u2029line2')).toBe('line1[error] forgedline2');
   });
 
+  it('strips every Unicode format character, not just a hand-picked list', () => {
+    // Arabic letter mark (a Bidi_Control the old range missed), soft
+    // hyphen, interlinear annotation anchor, Mongolian vowel separator,
+    // and a tag-block character used to hide text.
+    expect(sanitizeForLog('KSEA\u061c stale')).toBe('KSEA stale');
+    expect(sanitizeForLog('a\u00adb\ufff9c\u180ed\u{e0041}e')).toBe('abcde');
+  });
+
+  it('drops lone surrogates but keeps paired ones', () => {
+    expect(sanitizeForLog('a\ud83db')).toBe('ab');
+    expect(sanitizeForLog('a😀b')).toBe('a😀b');
+  });
+
+  it('truncates on code point boundaries so a surrogate pair is never split', () => {
+    const out = sanitizeForLog(`${'x'.repeat(63)}😀tail`, 64);
+    expect(out).toBe(`${'x'.repeat(63)}😀…`);
+    expect(/\p{Cs}/u.test(out)).toBe(false); // no lone surrogate left behind
+  });
+
   it('leaves ordinary non-ASCII text alone', () => {
     expect(sanitizeForLog('Ångström 20°C — Zürich')).toBe('Ångström 20°C — Zürich');
   });

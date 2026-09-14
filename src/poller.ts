@@ -1,7 +1,16 @@
 import type { Logging } from 'homebridge';
 
 import { NwsHttpError, withJitter } from './nwsClient.js';
-import { STALE_OBSERVATION_MS } from './platformAccessory.js';
+
+/**
+ * Observations older than this are treated as stale and the sensors are
+ * marked inactive. NWS stations typically report hourly and QC processing
+ * can add up to 20 minutes; two hours of silence means the station is dark
+ * (AWOS sites do this routinely) and HomeKit should not present the last
+ * reading as current. Shared by the poller (station freshness) and the
+ * accessory (per-sensor expiry) so the two can never disagree.
+ */
+export const STALE_OBSERVATION_MS = 2 * 60 * 60 * 1000;
 
 /** A single NWS observation reduced to what HomeKit needs. */
 export interface ParsedObservation {
@@ -18,7 +27,12 @@ export interface StationSelection {
 }
 
 /** The observation parsed, but neither temperature nor humidity was usable. */
-export class UnusableObservationError extends Error {}
+export class UnusableObservationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnusableObservationError';
+  }
+}
 
 /**
  * True when an error means "this station cannot serve observations", as
@@ -82,7 +96,11 @@ export interface PollerMetrics {
   activeStationId: string;
   /** Number of times the poller switched to a replacement station. */
   stationFailovers: number;
-  /** Epoch ms of the last observation applied to HomeKit, or null if none yet. */
+  /**
+   * Epoch ms when a fresh observation last reached HomeKit, or null if none
+   * yet. A stale reading from an explicitly configured station is still
+   * handed to the accessory (which marks it inactive) but is not a success.
+   */
   lastSuccessAt: number | null;
 }
 
@@ -224,7 +242,10 @@ export class ObservationPoller {
   }
 
   private apply(observation: ParsedObservation): boolean {
-    this.metrics.lastSuccessAt = this.now();
+    const now = this.now();
+    if (isObservationFresh(observation, now)) {
+      this.metrics.lastSuccessAt = now;
+    }
     return this.opts.sink.applyReading(observation);
   }
 

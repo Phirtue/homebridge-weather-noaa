@@ -125,6 +125,15 @@ interface AutoStationContext {
   cacheFile: string;
 }
 
+/**
+ * Homebridge hands every platform block the same API object, so this is
+ * "has a NOAAWeather block already been constructed in this process".
+ * config.schema.json marks the platform `singular`, but that only binds
+ * the UI: a hand-edited config.json can hold two blocks, which would then
+ * fight over one fixed accessory UUID and the same two cache files.
+ */
+const constructedFor = new WeakSet<API>();
+
 export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
@@ -138,6 +147,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   private handler: NOAAWeatherAccessory | null = null;
   private poller: ObservationPoller | null = null;
   private shuttingDown = false;
+  /** Parsed once; discovery retries must not re-log the same config warnings. */
+  private parsedConfig: PluginConfig | null | undefined;
 
   constructor(
     public readonly log: Logging,
@@ -147,6 +158,16 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
     this.client = new NwsClient(log, this.buildUserAgent());
+
+    if (constructedFor.has(api)) {
+      this.log.error(
+        'Another NOAAWeather platform block is already configured. Only one is ' +
+        'supported: both blocks would drive the same HomeKit accessory and cache ' +
+        'files. Remove the duplicate block from config.json.',
+      );
+    } else {
+      constructedFor.add(api);
+    }
 
     this.log.debug('Finished initializing platform:', this.config.name);
 
@@ -186,17 +207,33 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
   /**
    * Parse and validate all config values in one place. Returns null (and
-   * logs why) when the plugin cannot start.
+   * logs why) when the plugin cannot start. The result is memoized: the
+   * discovery retry loop calls discoverDevices every 1–15 minutes for as
+   * long as the network is down, and each pass must not repeat the
+   * "refreshInterval clamped" or "stationId invalid" warnings.
    */
   private parseConfig(): PluginConfig | null {
+    if (this.parsedConfig === undefined) {
+      this.parsedConfig = this.parseConfigUncached();
+    }
+    return this.parsedConfig;
+  }
+
+  private parseConfigUncached(): PluginConfig | null {
     const raw = this.config as Record<string, unknown>;
 
+    // Only a number or a numeric string counts. Number(true) is 1 and
+    // Number([]) is 0, so a mistyped config value would otherwise become
+    // a plausible-looking (and wrong) setting.
     const toNumber = (v: unknown): number | undefined => {
-      if (v === null || v === undefined || v === '') {
-        return undefined;
+      if (typeof v === 'number') {
+        return Number.isFinite(v) ? v : undefined;
       }
-      const n = Number(v);
-      return Number.isFinite(n) ? n : undefined;
+      if (typeof v === 'string' && v.trim() !== '') {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : undefined;
+      }
+      return undefined;
     };
 
     const latitude = toNumber(raw.latitude);
@@ -500,9 +537,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
 
   /**
    * Hand the accessory to an ObservationPoller. Only one poller may exist:
-   * a second timer chain's first colliding tick would hit the in-flight
-   * guard and die without rescheduling — a silent landmine for future
-   * refactors, so the invariant is enforced here rather than assumed.
+   * each has its own timer chain, so a second one would double the request
+   * rate against the free NWS API and let two schedules race to update
+   * the same accessory. The invariant is enforced here rather than assumed.
    */
   private startPolling(
     stationId: string,

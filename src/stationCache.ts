@@ -92,7 +92,9 @@ export function readJsonBounded(file: string): unknown {
 /**
  * Load the cached station for the given coordinates. The cached station ID
  * is re-validated against STATION_ID_RE before use, so a tampered cache file
- * can never inject content into a request URL.
+ * can never inject content into a request URL. A missing file is the
+ * normal first-run case, detected from the open() result rather than a
+ * separate existence check, so it is never misreported as corruption.
  */
 export function readStationCache(
   log: Logging,
@@ -100,9 +102,6 @@ export function readStationCache(
   latitude: number,
   longitude: number,
 ): StationCacheResult {
-  if (!fs.existsSync(cacheFile)) {
-    return { stationId: null, wasCorrupted: false };
-  }
   try {
     const cache = readJsonBounded(cacheFile) as PointsCache;
     const ageMs = Date.now() - cache.timestamp;
@@ -128,7 +127,10 @@ export function readStationCache(
         : '';
     log.info(`Using cached NOAA station: ${cache.stationId}${gridNote}`);
     return { stationId: cache.stationId, wasCorrupted: false };
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { stationId: null, wasCorrupted: false };
+    }
     log.warn('Corrupted NOAA station cache. Rebuilding.');
     try {
       fs.unlinkSync(cacheFile);
