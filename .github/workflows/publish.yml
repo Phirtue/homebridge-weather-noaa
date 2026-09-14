@@ -33,6 +33,8 @@ jobs:
     steps:
       # This job executes third-party development tools, so block unexpected
       # egress even though its token is read-only and it has no OIDC access.
+      # tuf-repo-cdn.sigstore.dev serves the Sigstore trust root that
+      # `npm audit signatures` uses to verify provenance attestations.
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
@@ -44,6 +46,7 @@ jobs:
             objects.githubusercontent.com:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            tuf-repo-cdn.sigstore.dev:443
 
       # Actions pinned to commit SHAs so a compromised tag cannot inject code.
       - name: Checkout code
@@ -84,6 +87,13 @@ jobs:
       # lint and build are invoked explicitly below.
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      # Registry signatures and provenance attestations for everything that
+      # participates in the build. Complements the lockfile verifier above:
+      # integrity proves "the locked bytes", signatures prove "the registry
+      # served them".
+      - name: Verify registry signatures and provenance
+        run: npm audit signatures
 
       - name: Lint
         run: npm run lint
