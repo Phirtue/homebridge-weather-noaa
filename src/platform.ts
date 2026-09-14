@@ -67,6 +67,15 @@ const DISCOVERY_RETRY_MAX_MS = 15 * 60_000;
 const AUTO_FAILOVER_RETRY_MS = 60 * 60_000;
 const MAX_STATION_CANDIDATES = 10;
 
+/**
+ * Absolute floor for any scheduled poll delay. Every schedule computation
+ * above clamps to this so no arithmetic mistake (a cooldown deadline that
+ * has already passed, a negative remainder) can collapse the interval to
+ * milliseconds and turn the plugin into a request loop against the free
+ * NWS API. v1.10.4 shipped exactly that failure mode.
+ */
+const MIN_POLL_DELAY_MS = 60_000;
+
 /** Validated plugin configuration; null when required fields are unusable. */
 interface PluginConfig {
   latitude: number;
@@ -556,11 +565,15 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         );
       }
       let delay = withJitter(baseRefreshMs * mult);
-      if (nextFailoverAttemptAt > 0) {
+      const now = Date.now();
+      if (nextFailoverAttemptAt > now) {
         // A relaxed adaptive schedule can be several days long. Keep failed
-        // station replacement attempts on their own one-hour ceiling.
-        delay = Math.min(delay, Math.max(1, nextFailoverAttemptAt - Date.now()));
+        // station replacement attempts on their own one-hour ceiling. Only a
+        // deadline still in the future may shorten the delay; a passed one
+        // must never do so.
+        delay = Math.min(delay, nextFailoverAttemptAt - now);
       }
+      delay = Math.max(delay, MIN_POLL_DELAY_MS);
       const t = setTimeout(() => {
         this.timers.delete(t);
         // eslint-disable-next-line @typescript-eslint/no-use-before-define
@@ -598,6 +611,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
           return;
         }
 
+        // The station is healthy again (or never left): clear any pending
+        // replacement-search cooldown so it cannot keep shaping the schedule.
+        nextFailoverAttemptAt = 0;
         const changed = handler.applyReading(observation);
         unchangedStreak = changed ? 0 : unchangedStreak + 1;
       } catch (err) {

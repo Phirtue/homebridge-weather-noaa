@@ -895,6 +895,84 @@ describe('startPolling', () => {
     expect(mock.noteObservationFailure).toHaveBeenCalledTimes(2);
   });
 
+  it('returns to the normal cadence when the station recovers after a failed search', async () => {
+    // Regression for v1.10.4: a failover cooldown deadline that had already
+    // passed collapsed the poll delay to 1 ms, producing ~1000 requests per
+    // second against NWS once a stale station came back on its own.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    let stationFresh = false;
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes('/points/')) {
+        return new Response(JSON.stringify({
+          properties: { gridId: 'SEW', gridX: 138, gridY: 80 },
+        }), { status: 200 });
+      }
+      if (url.includes('/gridpoints/')) {
+        return new Response(JSON.stringify({
+          features: [{ properties: { stationIdentifier: 'D2629' } }],
+        }), { status: 200 });
+      }
+      const timestamp = stationFresh
+        ? new Date(Date.now() - 10 * 60_000).toISOString()
+        : '2026-09-01T18:00:00Z';
+      return new Response(JSON.stringify({
+        properties: { timestamp, temperature: { value: 14, unitCode: 'wmoUnit:degC' } },
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+    const handler = makeHandler(true);
+
+    invoke(
+      platform,
+      'startPolling',
+      'D2629',
+      handler,
+      BASE_MS,
+      false,
+      { latitude: 47.62, longitude: -122.35, cacheFile: '/unused' },
+    );
+    await vi.advanceTimersByTimeAsync(0); // stale -> replacement search fails
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    stationFresh = true;
+    for (let i = 0; i < 61; i++) {
+      await vi.advanceTimersByTimeAsync(60_000); // cross the one-hour cooldown
+    }
+    const afterCooldown = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    // At most one poll per minute is ever possible; at BASE_MS cadence, none.
+    expect(fetchMock.mock.calls.length - afterCooldown).toBeLessThanOrEqual(1);
+
+    // Cadence is back to the base interval. Over ten periods, ±10% jitter
+    // and phase alignment allow 8–12 polls; the bug produced ~600,000.
+    const before = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(BASE_MS * 10);
+    const polls = fetchMock.mock.calls.length - before;
+    expect(polls).toBeGreaterThanOrEqual(8);
+    expect(polls).toBeLessThanOrEqual(12);
+  });
+
+  it('never schedules a poll sooner than the one-minute floor', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const fetchMock = vi.fn(async () => new Response(OBSERVATION_URL_BODY, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { platform } = makePlatform(VALID);
+
+    // The constructor already validated refresh bounds; feed the poller an
+    // out-of-contract tiny interval directly to prove the floor holds.
+    invoke(platform, 'startPolling', 'KSEA', makeHandler(), 1, false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('reuses a probed initial observation without another request', async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn();
