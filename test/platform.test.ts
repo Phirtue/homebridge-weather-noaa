@@ -1017,3 +1017,42 @@ describe('extractHumidity', () => {
     expect(extract({ value: Number.POSITIVE_INFINITY, qualityControl: 'V' })).toBeNull();
   });
 });
+
+describe('logMetrics', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('reports transport counters before polling starts', () => {
+    const { platform, log } = makePlatform(VALID);
+    invoke(platform, 'logMetrics');
+    const line = log.messages.find((m) => m.includes('NOAA Platform Metrics'));
+    expect(line).toMatch(/failures=0 retries=0 rateLimited=0 cacheResets=0/);
+    expect(line).toMatch(/station=none failovers=0 lastSuccess=never/);
+  });
+
+  it('reports the active station, failover count and last success once polling', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      properties: {
+        timestamp: '2026-09-07T15:20:00Z',
+        temperature: { value: 20, unitCode: 'wmoUnit:degC' },
+      },
+    }), { status: 200 })));
+    const { platform, log } = makePlatform(VALID);
+    const handler = {
+      applyReading: vi.fn(() => true),
+      noteObservationFailure: vi.fn(),
+      shutdown: vi.fn(),
+    } as unknown as NOAAWeatherAccessory;
+
+    invoke(platform, 'startPolling', 'KSEA', handler, 5 * 60_000, false);
+    await vi.advanceTimersByTimeAsync(0);
+    invoke(platform, 'logMetrics');
+    const line = log.messages.filter((m) => m.includes('NOAA Platform Metrics')).at(-1);
+    expect(line).toMatch(/station=KSEA failovers=0 lastSuccess=2026-09-07T15:30:00\.000Z/);
+  });
+});

@@ -11,8 +11,16 @@ import type {
 } from 'homebridge';
 import * as path from 'path';
 
-import { NOAAWeatherAccessory, STALE_OBSERVATION_MS } from './platformAccessory.js';
-import { NwsClient, NwsHttpError, NWS_API_BASE, withJitter } from './nwsClient.js';
+import { NOAAWeatherAccessory } from './platformAccessory.js';
+import { NwsClient, NWS_API_BASE, withJitter } from './nwsClient.js';
+import {
+  isObservationFresh,
+  isStationUnavailable,
+  ObservationPoller,
+  ParsedObservation,
+  StationSelection,
+  UnusableObservationError,
+} from './poller.js';
 import { sanitizeForLog } from './sanitize.js';
 import { PLATFORM_NAME, PLUGIN_NAME, PLUGIN_VERSION } from './settings.js';
 import {
@@ -42,17 +50,14 @@ export const COORD_DECIMALS = 2;
  */
 const ACCEPTABLE_QC = new Set(['V', 'C', 'S', 'G', 'Z']);
 
-const ADAPTIVE_GROW_AFTER_UNCHANGED = 3;
-const ADAPTIVE_MAX_MULT = 4;
-
 /**
  * Refresh interval bounds in minutes. The floor protects the free NWS API;
  * the ceiling matches config.schema.json, which only binds through the
  * Homebridge UI — a hand-edited config.json can hold any finite number.
- * Without the ceiling, baseRefreshMs * ADAPTIVE_MAX_MULT could exceed
- * Node's 2^31-1 ms setTimeout limit, which Node clamps to 1 ms: the
- * failure mode would be a continuous request loop, the exact inverse of
- * the configured intent.
+ * Without the ceiling, baseRefreshMs × the poller's adaptive multiplier
+ * could exceed Node's 2^31-1 ms setTimeout limit, which Node clamps to
+ * 1 ms: the failure mode would be a continuous request loop, the exact
+ * inverse of the configured intent.
  */
 const REFRESH_MIN_MINUTES = 5;
 const REFRESH_MAX_MINUTES = 1440;
@@ -64,17 +69,7 @@ const REFRESH_MAX_MINUTES = 1440;
  */
 const DISCOVERY_RETRY_INITIAL_MS = 60_000;
 const DISCOVERY_RETRY_MAX_MS = 15 * 60_000;
-const AUTO_FAILOVER_RETRY_MS = 60 * 60_000;
 const MAX_STATION_CANDIDATES = 10;
-
-/**
- * Absolute floor for any scheduled poll delay. Every schedule computation
- * above clamps to this so no arithmetic mistake (a cooldown deadline that
- * has already passed, a negative remainder) can collapse the interval to
- * milliseconds and turn the plugin into a request loop against the free
- * NWS API. v1.10.4 shipped exactly that failure mode.
- */
-const MIN_POLL_DELAY_MS = 60_000;
 
 /** Validated plugin configuration; null when required fields are unusable. */
 interface PluginConfig {
@@ -112,24 +107,11 @@ interface ObservationResponse {
   };
 }
 
-interface ParsedObservation {
-  temperature: number | null;
-  humidity: number | null;
-  observedAt: number | null;
-}
-
-interface StationSelection {
-  stationId: string;
-  observation: ParsedObservation;
-}
-
 interface AutoStationContext {
   latitude: number;
   longitude: number;
   cacheFile: string;
 }
-
-class UnusableObservationError extends Error {}
 
 export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
@@ -142,7 +124,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   private discoveryRetryMs = DISCOVERY_RETRY_INITIAL_MS;
   private assumedCelsiusLogged = false;
   private handler: NOAAWeatherAccessory | null = null;
-  private pollingStarted = false;
+  private poller: ObservationPoller | null = null;
   private shuttingDown = false;
 
   constructor(
@@ -179,6 +161,7 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       return;
     }
     this.shuttingDown = true;
+    this.poller?.stop();
     this.handler?.shutdown();
     this.client.shutdown();
     for (const t of this.timers) {
@@ -451,17 +434,14 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         }
         try {
           const observation = await this.fetchObservation(candidate);
-          if (!this.isObservationFresh(observation)) {
+          if (!isObservationFresh(observation)) {
             this.log.warn(`Skipping NOAA station ${candidate}: latest observation is stale.`);
             continue;
           }
           selection = { stationId: candidate, observation };
           break;
         } catch (err) {
-          const unavailable =
-            err instanceof UnusableObservationError ||
-            (err instanceof NwsHttpError && (err.status === 404 || err.status === 410));
-          if (!unavailable) {
+          if (!isStationUnavailable(err)) {
             throw err;
           }
           this.log.warn(`Skipping NOAA station ${candidate}: no usable observation.`);
@@ -496,6 +476,12 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     }
   }
 
+  /**
+   * Hand the accessory to an ObservationPoller. Only one poller may exist:
+   * a second timer chain's first colliding tick would hit the in-flight
+   * guard and die without rescheduling — a silent landmine for future
+   * refactors, so the invariant is enforced here rather than assumed.
+   */
   private startPolling(
     stationId: string,
     handler: NOAAWeatherAccessory,
@@ -507,153 +493,25 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     if (this.shuttingDown) {
       return;
     }
-    // Only one timer chain may exist. Today this cannot trigger
-    // (didFinishLaunching fires once and discovery retries stop after
-    // success), but a second chain's first colliding tick would hit the
-    // inFlight guard below and die without rescheduling — a silent
-    // landmine for future refactors, so the invariant is enforced here.
-    if (this.pollingStarted) {
+    if (this.poller) {
       this.log.debug('startPolling called again; ignoring (already polling).');
       return;
     }
-    this.pollingStarted = true;
-
-    let activeStationId = stationId;
-    let pendingObservation = initialObservation;
-    let nextFailoverAttemptAt = 0;
-    let unchangedStreak = 0;
-    let inFlight = false;
-
-    const tryFailover = async (reason: string): Promise<boolean | null> => {
-      if (
-        !autoStation ||
-        this.shuttingDown ||
-        Date.now() < nextFailoverAttemptAt
-      ) {
-        return null;
-      }
-      nextFailoverAttemptAt = Date.now() + AUTO_FAILOVER_RETRY_MS;
-      this.log.warn(
-        `Auto-selected NOAA station ${activeStationId} ${reason}; looking for a replacement.`,
-      );
-      const replacement = await this.discoverStation(
-        autoStation.latitude,
-        autoStation.longitude,
-        autoStation.cacheFile,
-        activeStationId,
-      );
-      if (!replacement || this.shuttingDown) {
-        return null;
-      }
-      this.log.info(
-        `Switched NOAA station from ${activeStationId} to ${replacement.stationId}.`,
-      );
-      activeStationId = replacement.stationId;
-      nextFailoverAttemptAt = 0;
-      return handler.applyReading(replacement.observation);
-    };
-
-    const scheduleNext = (): void => {
-      if (this.shuttingDown) {
-        return;
-      }
-      let mult = 1;
-      if (adaptive && unchangedStreak >= ADAPTIVE_GROW_AFTER_UNCHANGED) {
-        mult = Math.min(
-          ADAPTIVE_MAX_MULT,
-          1 + Math.floor(unchangedStreak / ADAPTIVE_GROW_AFTER_UNCHANGED),
-        );
-      }
-      let delay = withJitter(baseRefreshMs * mult);
-      const now = Date.now();
-      if (nextFailoverAttemptAt > now) {
-        // A relaxed adaptive schedule can be several days long. Keep failed
-        // station replacement attempts on their own one-hour ceiling. Only a
-        // deadline still in the future may shorten the delay; a passed one
-        // must never do so.
-        delay = Math.min(delay, nextFailoverAttemptAt - now);
-      }
-      delay = Math.max(delay, MIN_POLL_DELAY_MS);
-      const t = setTimeout(() => {
-        this.timers.delete(t);
-        // eslint-disable-next-line @typescript-eslint/no-use-before-define
-        tick().catch((err) => this.log.error('Tick error:', err));
-      }, delay);
-      t.unref();
-      this.timers.add(t);
-    };
-
-    const tick = async (): Promise<void> => {
-      if (inFlight || this.shuttingDown) {
-        return;
-      }
-      inFlight = true;
-      try {
-        const observation =
-          pendingObservation ?? await this.fetchObservation(activeStationId);
-        pendingObservation = null;
-        if (this.shuttingDown) {
-          return;
-        }
-        if (autoStation && !this.isObservationFresh(observation)) {
-          const failoverChanged = await tryFailover('is stale');
-          if (this.shuttingDown) {
-            return;
-          }
-          if (failoverChanged === null) {
-            // Never replace a last-known-good value with data already known
-            // to be stale. The accessory will independently expire the
-            // retained value according to its original observation time.
-            handler.noteObservationFailure();
-            return;
-          }
-          unchangedStreak = failoverChanged ? 0 : unchangedStreak + 1;
-          return;
-        }
-
-        // The station is healthy again (or never left): clear any pending
-        // replacement-search cooldown so it cannot keep shaping the schedule.
-        nextFailoverAttemptAt = 0;
-        const changed = handler.applyReading(observation);
-        unchangedStreak = changed ? 0 : unchangedStreak + 1;
-      } catch (err) {
-        if (this.shuttingDown) {
-          return;
-        }
-        const stationUnavailable =
-          err instanceof UnusableObservationError ||
-          (err instanceof NwsHttpError && (err.status === 404 || err.status === 410));
-        const failoverChanged = stationUnavailable
-          ? await tryFailover('has no usable observation')
-          : null;
-        if (this.shuttingDown) {
-          return;
-        }
-        if (failoverChanged !== null) {
-          unchangedStreak = failoverChanged ? 0 : unchangedStreak + 1;
-        } else {
-          this.log.error('NOAA observation fetch failed:', (err as Error).message);
-          // A failed poll is not a value change: leave the adaptive streak
-          // alone. Resetting it here snapped a relaxed schedule back to the
-          // fastest polling rate for the entire duration of an NWS outage —
-          // maximum load aimed at a service that is already struggling.
-          // Failed polls also never reach applyReading, so staleness must be
-          // re-evaluated here or an extended outage leaves sensors active.
-          handler.noteObservationFailure();
-        }
-      } finally {
-        inFlight = false;
-        if (!this.shuttingDown) {
-          scheduleNext();
-        }
-      }
-    };
-
-    tick().catch((err) => {
-      if (!this.shuttingDown) {
-        this.log.error('Initial tick error:', err);
-      }
+    this.poller = new ObservationPoller({
+      stationId,
+      sink: handler,
+      baseRefreshMs,
+      adaptive,
+      log: this.log,
+      initialObservation,
+      fetchObservation: (id) => this.fetchObservation(id),
+      findReplacement: autoStation
+        ? (exclude) => this.discoverStation(
+          autoStation.latitude, autoStation.longitude, autoStation.cacheFile, exclude,
+        )
+        : undefined,
     });
+    this.poller.start();
   }
 
   private async fetchObservation(stationId: string): Promise<ParsedObservation> {
@@ -693,19 +551,17 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     };
   }
 
-  private isObservationFresh(observation: ParsedObservation): boolean {
-    return (
-      observation.observedAt !== null &&
-      Date.now() - observation.observedAt <= STALE_OBSERVATION_MS
-    );
-  }
-
-  /** Convert NWS QuantitativeValue to °C, honoring unitCode and QC flag. */
-  private extractTemperatureC(qv: QuantitativeValue | undefined): number | null {
-    // TypeScript describes the expected schema, but JSON.parse enforces no
-    // runtime types and can decode an overflowing number (such as 1e400) as
-    // Infinity. Reject before conversion so a malformed API value cannot
-    // become a plausible-looking clamped HomeKit reading.
+  /**
+   * Shared validation for an NWS QuantitativeValue. Returns the numeric
+   * value only when it is a finite number that passed (or was not subject
+   * to) MADIS quality control.
+   *
+   * TypeScript describes the expected schema, but JSON.parse enforces no
+   * runtime types and can decode an overflowing number (such as 1e400) as
+   * Infinity. Reject before conversion so a malformed API value cannot
+   * become a plausible-looking clamped HomeKit reading.
+   */
+  private acceptedValue(qv: QuantitativeValue | undefined, label: string): number | null {
     if (!qv || typeof qv.value !== 'number' || !Number.isFinite(qv.value)) {
       return null;
     }
@@ -713,14 +569,24 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       qv.qualityControl !== undefined && qv.qualityControl !== null &&
       (typeof qv.qualityControl !== 'string' || !ACCEPTABLE_QC.has(qv.qualityControl))
     ) {
-      this.log.debug(`Rejecting temperature with QC=${sanitizeForLog(qv.qualityControl, 8)}`);
+      this.log.debug(`Rejecting ${label} with QC=${sanitizeForLog(qv.qualityControl, 8)}`);
       return null;
     }
-    if (qv.unitCode !== undefined && qv.unitCode !== null && typeof qv.unitCode !== 'string') {
+    return qv.value;
+  }
+
+  /** Convert NWS QuantitativeValue to °C, honoring unitCode and QC flag. */
+  private extractTemperatureC(qv: QuantitativeValue | undefined): number | null {
+    const value = this.acceptedValue(qv, 'temperature');
+    if (value === null) {
+      return null;
+    }
+    const unitCode = qv?.unitCode;
+    if (unitCode !== undefined && unitCode !== null && typeof unitCode !== 'string') {
       this.log.warn('Temperature unit is not a string; ignoring reading.');
       return null;
     }
-    const unit = (qv.unitCode ?? '').toLowerCase();
+    const unit = (unitCode ?? '').toLowerCase();
     if (unit === '') {
       // NWS always sends wmoUnit:degC in practice; a missing unitCode is a
       // station anomaly. Assume Celsius but leave a trace (once) so a
@@ -729,41 +595,42 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         this.assumedCelsiusLogged = true;
         this.log.debug('Temperature reading has no unitCode; assuming Celsius.');
       }
-      return qv.value;
+      return value;
     }
     if (unit.endsWith('degc')) {
-      return qv.value;
+      return value;
     }
     if (unit.endsWith('degf')) {
-      return (qv.value - 32) * (5 / 9);
+      return (value - 32) * (5 / 9);
     }
     if (unit.endsWith('k')) {
-      return qv.value - 273.15;
+      return value - 273.15;
     }
-    this.log.warn(`Unknown temperature unit "${sanitizeForLog(qv.unitCode, 32)}", ignoring reading.`);
+    this.log.warn(`Unknown temperature unit "${sanitizeForLog(unitCode, 32)}", ignoring reading.`);
     return null;
   }
 
   private extractHumidity(qv: QuantitativeValue | undefined): number | null {
-    if (!qv || typeof qv.value !== 'number' || !Number.isFinite(qv.value)) {
-      return null;
-    }
-    if (
-      qv.qualityControl !== undefined && qv.qualityControl !== null &&
-      (typeof qv.qualityControl !== 'string' || !ACCEPTABLE_QC.has(qv.qualityControl))
-    ) {
-      this.log.debug(`Rejecting humidity with QC=${sanitizeForLog(qv.qualityControl, 8)}`);
-      return null;
-    }
-    return Math.max(0, Math.min(100, qv.value));
+    const value = this.acceptedValue(qv, 'humidity');
+    return value === null ? null : Math.max(0, Math.min(100, value));
   }
 
+  /**
+   * Hourly operational summary. Client counters cover the transport; the
+   * poller fields answer the questions a user with stale sensors actually
+   * asks — which station is feeding me, has it been switched, and when did
+   * a reading last reach HomeKit.
+   */
   private logMetrics(): void {
     const m = this.client.metrics;
+    const p = this.poller?.metrics;
+    const lastSuccess = p?.lastSuccessAt ? new Date(p.lastSuccessAt).toISOString() : 'never';
     this.log.info(
       `NOAA Platform Metrics - failures=${m.apiFailures} ` +
       `retries=${m.retryCount} rateLimited=${m.rateLimitedCount} ` +
-      `cacheResets=${this.stationCacheResets}`,
+      `cacheResets=${this.stationCacheResets} ` +
+      `station=${p?.activeStationId ?? 'none'} failovers=${p?.stationFailovers ?? 0} ` +
+      `lastSuccess=${lastSuccess}`,
     );
   }
 }
