@@ -16,31 +16,34 @@ The plugin automatically finds a nearby observation station with current
 readings and fails over if that station stops reporting, or you can point
 it at a specific station.
 
-## What's New in v1.10.5
+## What's New in v1.11.0
 
-- **Fixes a v1.10.4 polling regression.** After a failed station
-  replacement search, a recovering station could drive the poll interval
-  down to milliseconds. Every scheduled poll now has a one-minute floor
-  and the search cooldown clears on the first fresh reading. Users on
-  1.10.4 should upgrade.
-- **Discovery checks station health.** Up to ten nearby candidates are
-  probed, and only a station with a recent timestamped observation is
-  cached.
-- **Stale stations fail over automatically.** Auto-selected stations are
-  replaced when their data becomes stale, unusable, or unavailable.
-  Failed replacement searches retain the last good values and retry
-  within one hour.
-- **Manual choices stay pinned.** An explicit `stationId` is never
-  switched automatically.
-- **Test suite.** 162 tests cover station selection, failover, bounded API
-  load, adaptive polling, shutdown races, and the existing security and
-  compatibility guarantees.
+- **Node.js 22+ required.** Node 20 is end-of-life and has been dropped;
+  the plugin is tested on Node 22, 24 and 26.
+- **See your station in the Home app.** The accessory's Model field shows
+  `NWS Station <id>` and updates when auto-discovery fails over.
+- **Clock-safe boot.** On a Raspberry Pi that starts before NTP has set
+  the clock, discovery now waits for a plausible time instead of writing
+  epoch timestamps into the caches.
+- **Supply chain.** Every CI and release build verifies npm registry
+  signatures and provenance attestations for all installed packages.
+- **Log spoofing hardening.** Unicode bidirectional and zero-width
+  controls are stripped from anything echoed into the log.
+- **Richer hourly metrics** (active station, failover count, last
+  successful reading) and an internal refactor that moves polling into
+  a dedicated, directly tested class.
+- **Test suite.** 166 tests cover station selection, failover, bounded API
+  load, adaptive polling, shutdown races, clock sanity, and the existing
+  security and compatibility guarantees.
 
-Earlier releases brought Node 26 and Homebridge 2.x support, verifiable
-npm releases with provenance, SLSA provenance and a signed SBOM, a
-hardened HTTP client, offline-boot recovery, stale-data detection, and
-a formal [security policy](./SECURITY.md). See
-[CHANGELOG.md](./CHANGELOG.md) for full details.
+v1.10.5 fixed a v1.10.4 regression in which a recovering station could
+drive the poll interval down to milliseconds; every scheduled poll now
+has a one-minute floor. Earlier releases brought automatic station
+failover, Node 26 and Homebridge 2.x support, verifiable npm releases
+with provenance, SLSA provenance and a signed SBOM, a hardened HTTP
+client, offline-boot recovery, stale-data detection, and a formal
+[security policy](./SECURITY.md). See [CHANGELOG.md](./CHANGELOG.md)
+for full details.
 
 ## Features
 

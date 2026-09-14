@@ -67,12 +67,14 @@ export const AUTO_FAILOVER_RETRY_MS = 60 * 60_000;
  */
 export const MIN_POLL_DELAY_MS = 60_000;
 
-/** The two accessory methods the poller drives. */
+/** The accessory surface the poller drives. */
 export interface ReadingSink {
   /** Returns true when a characteristic changed meaningfully. */
   applyReading(observation: ParsedObservation): boolean;
   /** A poll produced nothing usable; re-evaluate staleness now. */
   noteObservationFailure(): void;
+  /** The station now feeding readings: on start and after every failover. */
+  setStation?(stationId: string): void;
 }
 
 export interface PollerMetrics {
@@ -151,6 +153,7 @@ export class ObservationPoller {
       return;
     }
     this.started = true;
+    this.opts.sink.setStation?.(this.metrics.activeStationId);
     this.tick().catch((err) => {
       if (!this.stopped) {
         this.opts.log.error('Initial tick error:', err);
@@ -216,6 +219,7 @@ export class ObservationPoller {
     this.metrics.activeStationId = replacement.stationId;
     this.metrics.stationFailovers++;
     this.nextFailoverAttemptAt = 0;
+    this.opts.sink.setStation?.(replacement.stationId);
     return this.apply(replacement.observation);
   }
 

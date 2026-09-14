@@ -71,6 +71,18 @@ const DISCOVERY_RETRY_INITIAL_MS = 60_000;
 const DISCOVERY_RETRY_MAX_MS = 15 * 60_000;
 const MAX_STATION_CANDIDATES = 10;
 
+/**
+ * A wall clock earlier than this is not a real time. Raspberry Pis have no
+ * RTC and boot at the epoch (or the last shutdown time) until NTP syncs;
+ * Homebridge often starts first. Acting on such a clock would write
+ * nonsense timestamps into both cache files, mark fresh readings stale
+ * (or stale readings fresh), and force station rediscovery on every boot.
+ * The floor is a fixed past date, not the build time, so builds stay
+ * reproducible; a floor that is merely old can only under-detect, never
+ * misfire on a correct clock.
+ */
+export const CLOCK_SANITY_FLOOR_MS = Date.parse('2026-01-01T00:00:00Z');
+
 /** Validated plugin configuration; null when required fields are unusable. */
 interface PluginConfig {
   latitude: number;
@@ -272,6 +284,18 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     if (!cfg) {
       return;
     }
+    if (Date.now() < CLOCK_SANITY_FLOOR_MS) {
+      // Touch nothing — not the caches, not the accessory's staleness
+      // state — until the system clock is plausible. The discovery retry
+      // backoff (1 → 15 min) already exists for "network not up yet"; the
+      // same loop waits for NTP here.
+      this.log.warn(
+        `System clock reads ${new Date().toISOString()}, which is before this ` +
+        'plugin was built; waiting for time synchronization.',
+      );
+      this.scheduleDiscoveryRetry('Station discovery deferred');
+      return;
+    }
     const cacheFile = path.join(this.api.user.persistPath(), 'noaa-points-cache.json');
 
     // Stable UUID — preserved from v1.5 so existing HomeKit room assignments
@@ -357,15 +381,13 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
    * discovery on a doubling backoff, forever. The timer is unref()'d and
    * tracked in this.timers so it never blocks or survives shutdown.
    */
-  private scheduleDiscoveryRetry(): void {
+  private scheduleDiscoveryRetry(reason = 'Station discovery failed'): void {
     if (this.shuttingDown) {
       return;
     }
     const delayMs = withJitter(this.discoveryRetryMs);
     this.discoveryRetryMs = Math.min(this.discoveryRetryMs * 2, DISCOVERY_RETRY_MAX_MS);
-    this.log.warn(
-      `Station discovery failed; retrying in ${Math.round(delayMs / 1000)}s.`,
-    );
+    this.log.warn(`${reason}; retrying in ${Math.round(delayMs / 1000)}s.`);
     const t = setTimeout(() => {
       this.timers.delete(t);
       this.discoverDevices().catch((err) => {

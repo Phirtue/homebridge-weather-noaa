@@ -79,9 +79,13 @@ interface SensorChannel {
   persistedObservedAt: number | null;
 }
 
+/** Model string shown in the Home app before any station has been resolved. */
+const MODEL_UNKNOWN_STATION = 'Weather Station';
+
 export class NOAAWeatherAccessory {
   private readonly temperature: SensorChannel;
   private readonly humidity: SensorChannel;
+  private readonly information: Service;
   private readonly cacheFile: string;
   private staleTimer: NodeJS.Timeout | null = null;
   private shuttingDown = false;
@@ -93,9 +97,10 @@ export class NOAAWeatherAccessory {
   ) {
     this.cacheFile = path.join(this.platform.api.user.persistPath(), 'noaa-weather-last.json');
 
-    this.accessory.getService(this.platform.Service.AccessoryInformation)!
+    this.information = this.accessory.getService(this.platform.Service.AccessoryInformation)!;
+    this.information
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'NOAA / NWS')
-      .setCharacteristic(this.platform.Characteristic.Model, 'Weather Station')
+      .setCharacteristic(this.platform.Characteristic.Model, MODEL_UNKNOWN_STATION)
       .setCharacteristic(this.platform.Characteristic.SerialNumber, 'noaa-weather')
       .setCharacteristic(this.platform.Characteristic.FirmwareRevision, pluginVersion);
 
@@ -156,6 +161,17 @@ export class NOAAWeatherAccessory {
       clearTimeout(this.staleTimer);
       this.staleTimer = null;
     }
+  }
+
+  /**
+   * Surface the station feeding the sensors in the Home app's accessory
+   * details (Model field), so a user can see which station they are on —
+   * and notice a failover — without reading logs. The id has already
+   * passed STATION_ID_RE (3–8 alphanumerics), so it needs no sanitizing
+   * and stays well inside HAP's 64-character limit for Model.
+   */
+  setStation(stationId: string): void {
+    this.update(this.information, this.platform.Characteristic.Model, `NWS Station ${stationId}`);
   }
 
   /**
@@ -347,7 +363,7 @@ export class NOAAWeatherAccessory {
   private update(
     service: Service,
     characteristic: CharacteristicRef,
-    value: number | boolean,
+    value: number | boolean | string,
   ): boolean {
     try {
       service.updateCharacteristic(characteristic, value);

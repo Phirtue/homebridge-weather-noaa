@@ -320,6 +320,65 @@ describe('discovery-blocked boot', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('defers discovery and touches nothing while the system clock is implausible', async () => {
+    vi.useFakeTimers();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
+    try {
+      // A Pi without an RTC boots at (or near) the epoch until NTP syncs.
+      vi.setSystemTime(new Date('1970-01-01T00:00:05Z'));
+      const fetchMock = vi.fn(async (_input: string | URL | Request) =>
+        new Response('{}', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const chainableService = () => {
+        const svc: Record<string, unknown> = { updateCharacteristic: vi.fn() };
+        svc.setCharacteristic = vi.fn(() => svc);
+        return svc;
+      };
+      const restoredAccessory = {
+        UUID: 'uuid-noaa-weather-unique',
+        displayName: 'NOAA Weather',
+        getService: vi.fn(() => chainableService()),
+        getServiceById: vi.fn(() => chainableService()),
+        addService: vi.fn(() => chainableService()),
+      } as unknown as PlatformAccessory;
+      const api = {
+        hap: { Service: {}, Characteristic: {}, uuid: { generate: (s: string) => `uuid-${s}` } },
+        on: () => undefined,
+        user: { persistPath: () => dir },
+      } as unknown as API;
+      const log = makeFakeLog();
+      const platform = new NOAAWeatherPlatform(
+        log as Logging,
+        { platform: 'NOAAWeather', ...VALID } as PlatformConfig,
+        api,
+      );
+      platform.configureAccessory(restoredAccessory);
+
+      await (platform as unknown as { discoverDevices(): Promise<void> }).discoverDevices();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      // The restored accessory is not even wrapped in a handler: its
+      // staleness state must not be evaluated against a bogus clock.
+      expect(restoredAccessory.getService).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(dir, 'noaa-points-cache.json'))).toBe(false);
+      expect(log.messages.some((m) => m.includes('System clock reads 1970-01-01T00:00:05.000Z')))
+        .toBe(true);
+      expect(log.messages.some((m) => m.includes('Station discovery deferred; retrying in')))
+        .toBe(true);
+
+      // Once the clock is sane, the existing retry loop proceeds to discovery.
+      vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+      await vi.advanceTimersByTimeAsync(70_000);
+      expect(fetchMock).toHaveBeenCalled();
+      expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/points/');
+      expect(restoredAccessory.getService).toHaveBeenCalled();
+      invoke(platform, 'shutdown');
+    } finally {
+      vi.useRealTimers();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('healthy station selection', () => {
