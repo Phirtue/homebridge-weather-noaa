@@ -1,6 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [1.11.1] - 2026-09-13
+
+A code-review release: no new features. Documentation, pipeline and
+runtime correctness fixes found by a fresh review of 1.11.0.
 
 ### Security
 
@@ -52,6 +55,13 @@
 - The hourly `lastSuccess` metric counts only fresh readings; a stale
   reading from an explicitly configured station is still handed to
   HomeKit (which marks it inactive) but is no longer reported as a success.
+- **Documentation.** The README title is now "Homebridge Weather NOAA
+  Plugin", matching the package name. The 1.11.0 note that the Model
+  field "updates when auto-discovery fails over" is qualified: the value
+  is written immediately, but HAP's `Model` characteristic is read-only
+  with no event permission, so the Home app shows the change when it next
+  reads accessory information rather than instantly. HomeKit presents one
+  accessory with two sensor services, not two accessories.
 
 ### Fixed
 
