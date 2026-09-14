@@ -24,6 +24,38 @@
   the development server; never reachable from this plugin's runtime,
   which does not ship or depend on vitest).
 
+- **Log sanitizer strips Unicode bidirectional and invisible format
+  controls.** `sanitizeForLog` already removed C0/C1 control characters;
+  it now also removes zero-width characters, RLO/LRO/PDF embedding and
+  isolate controls, the BOM, and the U+2028/U+2029 line separators. Text
+  echoed from the NWS API or `config.json` can no longer make a log line
+  *render* differently from how it is stored ("Trojan Source" spoofing)
+  when users paste logs into GitHub issues or Discord.
+
+### Changed
+
+- **Hourly metrics line now answers the useful questions.** In addition to
+  the transport counters it reports `station=<id>` (the station currently
+  feeding HomeKit), `failovers=<n>` (how many times auto-discovery
+  switched stations this run) and `lastSuccess=<ISO time>` (when a reading
+  last reached HomeKit).
+
+### Internal
+
+- The polling loop moved out of a 150-line closure in `platform.ts` into
+  its own `ObservationPoller` class (`src/poller.ts`) with explicit state,
+  an injectable clock, and 16 direct unit tests covering cadence, the
+  adaptive multiplier, the one-minute floor, failover, the hourly search
+  cooldown, the 1.10.4 recovery regression and shutdown. The platform's
+  behaviour is unchanged; its existing tests pass without modification.
+- The "station unavailable" predicate (`UnusableObservationError` or an
+  NWS 404/410) and the MADIS quality-control/finite-number validation each
+  existed twice; both are now single functions.
+- `NOAAWeatherAccessory` tracks temperature and humidity through one
+  `SensorChannel` structure each instead of ten parallel fields, and the
+  duplicated `setTemperatureActive`/`setHumidityActive` pair is one method.
+  The on-disk cache format is unchanged.
+
 ### Maintenance
 
 - Dependabot now groups `vitest` with its `@vitest/*` helper packages,

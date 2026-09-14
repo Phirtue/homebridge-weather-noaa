@@ -21,6 +21,9 @@ dist/platform.js.map
 dist/platformAccessory.d.ts
 dist/platformAccessory.js
 dist/platformAccessory.js.map
+dist/poller.d.ts
+dist/poller.js
+dist/poller.js.map
 dist/sanitize.d.ts
 dist/sanitize.js
 dist/sanitize.js.map

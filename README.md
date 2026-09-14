@@ -32,7 +32,7 @@ it at a specific station.
   within one hour.
 - **Manual choices stay pinned.** An explicit `stationId` is never
   switched automatically.
-- **Test suite.** 142 tests cover station selection, failover, bounded API
+- **Test suite.** 162 tests cover station selection, failover, bounded API
   load, adaptive polling, shutdown races, and the existing security and
   compatibility guarantees.
 

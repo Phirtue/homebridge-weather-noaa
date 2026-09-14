@@ -44,6 +44,7 @@ interface WeatherReading {
   observedAt?: number | null;
 }
 
+/** On-disk shape. Field names are a compatibility contract with older releases. */
 interface CachedWeatherReading {
   temperature: number | null;
   humidity: number | null;
@@ -51,19 +52,37 @@ interface CachedWeatherReading {
   humidityObservedAt: number | null;
 }
 
+type CharacteristicRef = Parameters<Service['updateCharacteristic']>[0];
+
+/**
+ * Everything the accessory tracks about one HomeKit sensor. Temperature
+ * and humidity are identical apart from their service, characteristic,
+ * change threshold and clamp, so they share this shape and the logic below
+ * is written once against it rather than twice against parallel fields.
+ */
+interface SensorChannel {
+  /** Capitalized noun for log lines: "Temperature", "Humidity". */
+  readonly label: string;
+  readonly service: Service;
+  readonly characteristic: CharacteristicRef;
+  /** Minimum change that counts as a new reading for adaptive polling. */
+  readonly epsilon: number;
+  readonly clamp: (value: number) => number;
+  /** Last value pushed to HomeKit, or null if none yet. */
+  value: number | null;
+  /** Epoch ms the current value was observed; drives staleness. */
+  observedAt: number | null;
+  /** Last StatusActive pushed to HomeKit; null until the first push succeeds. */
+  active: boolean | null;
+  /** Baseline of what is on disk, so sub-epsilon drift still gets persisted. */
+  persistedValue: number | null;
+  persistedObservedAt: number | null;
+}
+
 export class NOAAWeatherAccessory {
-  private readonly temperatureService: Service;
-  private readonly humidityService: Service;
+  private readonly temperature: SensorChannel;
+  private readonly humidity: SensorChannel;
   private readonly cacheFile: string;
-  private last: WeatherReading = { temperature: null, humidity: null };
-  private persistedTemperature: number | null = null;
-  private persistedHumidity: number | null = null;
-  private persistedTemperatureObservedAt: number | null = null;
-  private persistedHumidityObservedAt: number | null = null;
-  private temperatureObservedAt: number | null = null;
-  private humidityObservedAt: number | null = null;
-  private temperatureActive: boolean | null = null;
-  private humidityActive: boolean | null = null;
   private staleTimer: NodeJS.Timeout | null = null;
   private shuttingDown = false;
 
@@ -81,42 +100,35 @@ export class NOAAWeatherAccessory {
       .setCharacteristic(this.platform.Characteristic.FirmwareRevision, pluginVersion);
 
     const cached = this.readCache();
-    this.last = {
-      temperature: cached.temperature,
-      humidity: cached.humidity,
-    };
-    this.temperatureObservedAt = cached.temperatureObservedAt;
-    this.humidityObservedAt = cached.humidityObservedAt;
-    this.persistedTemperature = cached.temperature;
-    this.persistedHumidity = cached.humidity;
-    this.persistedTemperatureObservedAt = cached.temperatureObservedAt;
-    this.persistedHumidityObservedAt = cached.humidityObservedAt;
 
-    this.temperatureService =
-      this.accessory.getServiceById(this.platform.Service.TemperatureSensor, TEMP_SUBTYPE)
-      || this.accessory.addService(
-        this.platform.Service.TemperatureSensor, 'NOAA Temperature', TEMP_SUBTYPE,
-      );
+    this.temperature = this.makeChannel({
+      label: 'Temperature',
+      service:
+        this.accessory.getServiceById(this.platform.Service.TemperatureSensor, TEMP_SUBTYPE)
+        || this.accessory.addService(
+          this.platform.Service.TemperatureSensor, 'NOAA Temperature', TEMP_SUBTYPE,
+        ),
+      characteristic: this.platform.Characteristic.CurrentTemperature,
+      epsilon: CHANGE_EPSILON_TEMP,
+      clamp: clampTemperature,
+    }, cached.temperature, cached.temperatureObservedAt);
 
-    this.humidityService =
-      this.accessory.getServiceById(this.platform.Service.HumiditySensor, HUMIDITY_SUBTYPE)
-      || this.accessory.addService(
-        this.platform.Service.HumiditySensor, 'NOAA Humidity', HUMIDITY_SUBTYPE,
-      );
+    this.humidity = this.makeChannel({
+      label: 'Humidity',
+      service:
+        this.accessory.getServiceById(this.platform.Service.HumiditySensor, HUMIDITY_SUBTYPE)
+        || this.accessory.addService(
+          this.platform.Service.HumiditySensor, 'NOAA Humidity', HUMIDITY_SUBTYPE,
+        ),
+      characteristic: this.platform.Characteristic.CurrentRelativeHumidity,
+      epsilon: CHANGE_EPSILON_HUMIDITY,
+      clamp: clampHumidity,
+    }, cached.humidity, cached.humidityObservedAt);
 
-    if (this.last.temperature !== null) {
-      this.update(
-        this.temperatureService,
-        this.platform.Characteristic.CurrentTemperature,
-        this.last.temperature,
-      );
-    }
-    if (this.last.humidity !== null) {
-      this.update(
-        this.humidityService,
-        this.platform.Characteristic.CurrentRelativeHumidity,
-        this.last.humidity,
-      );
+    for (const channel of this.channels()) {
+      if (channel.value !== null) {
+        this.update(channel.service, channel.characteristic, channel.value);
+      }
     }
 
     const now = Date.now();
@@ -125,7 +137,7 @@ export class NOAAWeatherAccessory {
 
     this.platform.log.info(
       'Initialized HomeKit with cached NOAA readings: ' +
-      `temp=${this.last.temperature ?? 'n/a'}°C humidity=${this.last.humidity ?? 'n/a'}%`,
+      `temp=${this.temperature.value ?? 'n/a'}°C humidity=${this.humidity.value ?? 'n/a'}%`,
     );
   }
 
@@ -146,62 +158,132 @@ export class NOAAWeatherAccessory {
     }
   }
 
-  private setTemperatureActive(active: boolean): boolean {
-    if (active === this.temperatureActive) {
-      return true;
+  /**
+   * Apply a fresh reading. Returns true if either characteristic changed
+   * meaningfully (used by the platform's adaptive polling).
+   * Null fields are ignored — the last known good value is retained.
+   */
+  applyReading(reading: WeatherReading): boolean {
+    const now = Date.now();
+    // A network timestamp must never move the local staleness clock into
+    // the future. Clamp any future value to receipt time; also treat a
+    // non-finite runtime value as absent despite the TypeScript contract.
+    const observedAt =
+      typeof reading.observedAt === 'number' && Number.isFinite(reading.observedAt)
+        ? Math.min(reading.observedAt, now)
+        : null;
+    const measurementTime = observedAt ?? now;
+
+    const temperatureChanged =
+      this.applyChannel(this.temperature, reading.temperature, measurementTime);
+    const humidityChanged =
+      this.applyChannel(this.humidity, reading.humidity, measurementTime);
+    const changed = temperatureChanged || humidityChanged;
+
+    const statusUpdated = this.syncStatusActive(now);
+    this.scheduleStaleCheck(now, statusUpdated ? null : STATUS_UPDATE_RETRY_MS);
+
+    // Compare against the persisted baseline, not only the previous
+    // in-memory sample. Otherwise repeated sub-epsilon changes can drift
+    // arbitrarily far without ever reaching disk.
+    if (this.channels().some((c) => this.hasMeaningfulChange(c) || this.hasNewerFreshness(c))) {
+      const cache: CachedWeatherReading = {
+        temperature: this.temperature.value,
+        humidity: this.humidity.value,
+        temperatureObservedAt: this.temperature.observedAt,
+        humidityObservedAt: this.humidity.observedAt,
+      };
+      if (writeJsonAtomic(this.platform.log, this.cacheFile, cache)) {
+        for (const channel of this.channels()) {
+          channel.persistedValue = channel.value;
+          channel.persistedObservedAt = channel.observedAt;
+        }
+      }
     }
-    if (!this.update(
-      this.temperatureService,
-      this.platform.Characteristic.StatusActive,
-      active,
-    )) {
+
+    if (changed) {
+      this.platform.log.info(
+        `Pushed to HomeKit: temp=${this.temperature.value ?? 'n/a'}°C ` +
+        `humidity=${this.humidity.value ?? 'n/a'}%`,
+      );
+    } else {
+      this.platform.log.debug('Reading unchanged within epsilon.');
+    }
+
+    return changed;
+  }
+
+  private makeChannel(
+    fixed: Pick<SensorChannel, 'label' | 'service' | 'characteristic' | 'epsilon' | 'clamp'>,
+    cachedValue: number | null,
+    cachedObservedAt: number | null,
+  ): SensorChannel {
+    return {
+      ...fixed,
+      value: cachedValue,
+      observedAt: cachedObservedAt,
+      active: null,
+      persistedValue: cachedValue,
+      persistedObservedAt: cachedObservedAt,
+    };
+  }
+
+  private channels(): SensorChannel[] {
+    return [this.temperature, this.humidity];
+  }
+
+  /** Push one channel's new value, if any. Returns whether it changed meaningfully. */
+  private applyChannel(
+    channel: SensorChannel,
+    raw: number | null,
+    measurementTime: number,
+  ): boolean {
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+      this.platform.log.debug(`${channel.label} null; retaining last known value.`);
       return false;
     }
-    this.temperatureActive = active;
+    const value = channel.clamp(raw);
+    const changed =
+      channel.value === null || Math.abs(value - channel.value) >= channel.epsilon;
+    this.update(channel.service, channel.characteristic, value);
+    channel.value = value;
+    channel.observedAt = measurementTime;
+    return changed;
+  }
+
+  private setActive(channel: SensorChannel, active: boolean): boolean {
+    if (active === channel.active) {
+      return true;
+    }
+    if (!this.update(channel.service, this.platform.Characteristic.StatusActive, active)) {
+      return false;
+    }
+    channel.active = active;
+    const noun = channel.label.toLowerCase();
     if (active) {
-      this.platform.log.info('Fresh temperature received; temperature sensor marked active.');
-    } else if (this.last.temperature !== null) {
+      this.platform.log.info(`Fresh ${noun} received; ${noun} sensor marked active.`);
+    } else if (channel.value !== null) {
       this.platform.log.warn(
-        'Temperature observation is stale; temperature sensor marked inactive.',
+        `${channel.label} observation is stale; ${noun} sensor marked inactive.`,
       );
     }
     return true;
   }
 
-  private setHumidityActive(active: boolean): boolean {
-    if (active === this.humidityActive) {
-      return true;
-    }
-    if (!this.update(
-      this.humidityService,
-      this.platform.Characteristic.StatusActive,
-      active,
-    )) {
-      return false;
-    }
-    this.humidityActive = active;
-    if (active) {
-      this.platform.log.info('Fresh humidity received; humidity sensor marked active.');
-    } else if (this.last.humidity !== null) {
-      this.platform.log.warn(
-        'Humidity observation is stale; humidity sensor marked inactive.',
-      );
-    }
-    return true;
+  private isFresh(channel: SensorChannel, now: number): boolean {
+    return (
+      channel.value !== null &&
+      channel.observedAt !== null &&
+      now - channel.observedAt <= STALE_OBSERVATION_MS
+    );
   }
 
+  /** Returns false if any StatusActive push failed (caller schedules a retry). */
   private syncStatusActive(now: number): boolean {
-    const temperatureShouldBeActive =
-      this.last.temperature !== null &&
-      this.temperatureObservedAt !== null &&
-      now - this.temperatureObservedAt <= STALE_OBSERVATION_MS;
-    const humidityShouldBeActive =
-      this.last.humidity !== null &&
-      this.humidityObservedAt !== null &&
-      now - this.humidityObservedAt <= STALE_OBSERVATION_MS;
-    const temperatureUpdated = this.setTemperatureActive(temperatureShouldBeActive);
-    const humidityUpdated = this.setHumidityActive(humidityShouldBeActive);
-    return temperatureUpdated && humidityUpdated;
+    // Evaluate both channels even if the first fails: `every` would
+    // short-circuit and leave the second sensor's status unsynced.
+    const results = this.channels().map((c) => this.setActive(c, this.isFresh(c, now)));
+    return results.every(Boolean);
   }
 
   private evaluateStaleness(now = Date.now()): void {
@@ -222,17 +304,18 @@ export class NOAAWeatherAccessory {
     if (this.shuttingDown) {
       return;
     }
-    const deadlines = [
-      this.last.temperature !== null && this.temperatureObservedAt !== null &&
-        this.temperatureObservedAt + STALE_OBSERVATION_MS >= now
-        ? this.temperatureObservedAt + STALE_OBSERVATION_MS
-        : null,
-      this.last.humidity !== null && this.humidityObservedAt !== null &&
-        this.humidityObservedAt + STALE_OBSERVATION_MS >= now
-        ? this.humidityObservedAt + STALE_OBSERVATION_MS
-        : null,
-      retryInMs !== null ? now + retryInMs : null,
-    ].filter((deadline): deadline is number => deadline !== null);
+    const deadlines: number[] = [];
+    for (const channel of this.channels()) {
+      if (channel.value !== null && channel.observedAt !== null) {
+        const deadline = channel.observedAt + STALE_OBSERVATION_MS;
+        if (deadline >= now) {
+          deadlines.push(deadline);
+        }
+      }
+    }
+    if (retryInMs !== null) {
+      deadlines.push(now + retryInMs);
+    }
     if (deadlines.length === 0) {
       return;
     }
@@ -244,147 +327,26 @@ export class NOAAWeatherAccessory {
     this.staleTimer.unref();
   }
 
-  /**
-   * Apply a fresh reading. Returns true if either characteristic changed
-   * meaningfully (used by the platform's adaptive polling).
-   * Null fields are ignored — the last known good value is retained.
-   */
-  applyReading(reading: WeatherReading): boolean {
-    let changed = false;
-
-    const now = Date.now();
-    const temperature =
-      typeof reading.temperature === 'number' && Number.isFinite(reading.temperature)
-        ? clampTemperature(reading.temperature)
-        : null;
-    const humidity =
-      typeof reading.humidity === 'number' && Number.isFinite(reading.humidity)
-        ? clampHumidity(reading.humidity)
-        : null;
-    // A network timestamp must never move the local staleness clock into
-    // the future. Clamp any future value to receipt time; also treat a
-    // non-finite runtime value as absent despite the TypeScript contract.
-    const observedAt =
-      typeof reading.observedAt === 'number' && Number.isFinite(reading.observedAt)
-        ? Math.min(reading.observedAt, now)
-        : null;
-    const measurementTime = observedAt ?? now;
-
-    if (temperature !== null) {
-      if (
-        this.last.temperature === null ||
-        Math.abs(temperature - this.last.temperature) >= CHANGE_EPSILON_TEMP
-      ) {
-        changed = true;
-      }
-      this.update(
-        this.temperatureService,
-        this.platform.Characteristic.CurrentTemperature,
-        temperature,
-      );
-      this.last.temperature = temperature;
-      this.temperatureObservedAt = measurementTime;
-    } else {
-      this.platform.log.debug('Temperature null; retaining last known value.');
-    }
-
-    if (humidity !== null) {
-      if (
-        this.last.humidity === null ||
-        Math.abs(humidity - this.last.humidity) >= CHANGE_EPSILON_HUMIDITY
-      ) {
-        changed = true;
-      }
-      this.update(
-        this.humidityService,
-        this.platform.Characteristic.CurrentRelativeHumidity,
-        humidity,
-      );
-      this.last.humidity = humidity;
-      this.humidityObservedAt = measurementTime;
-    } else {
-      this.platform.log.debug('Humidity null; retaining last known value.');
-    }
-    const statusUpdated = this.syncStatusActive(now);
-    this.scheduleStaleCheck(now, statusUpdated ? null : STATUS_UPDATE_RETRY_MS);
-
-    // Compare against the persisted baseline, not only the previous
-    // in-memory sample. Otherwise repeated sub-epsilon changes can drift
-    // arbitrarily far without ever reaching disk.
-    const shouldPersist =
-      this.hasMeaningfulChange(
-        this.last.temperature,
-        this.persistedTemperature,
-        CHANGE_EPSILON_TEMP,
-      ) ||
-      this.hasMeaningfulChange(
-        this.last.humidity,
-        this.persistedHumidity,
-        CHANGE_EPSILON_HUMIDITY,
-      ) ||
-      this.hasNewerFreshness(
-        temperature,
-        this.temperatureObservedAt,
-        this.persistedTemperatureObservedAt,
-      ) ||
-      this.hasNewerFreshness(
-        humidity,
-        this.humidityObservedAt,
-        this.persistedHumidityObservedAt,
-      );
-    if (shouldPersist) {
-      const cache: CachedWeatherReading = {
-        temperature: this.last.temperature,
-        humidity: this.last.humidity,
-        temperatureObservedAt: this.temperatureObservedAt,
-        humidityObservedAt: this.humidityObservedAt,
-      };
-      if (writeJsonAtomic(this.platform.log, this.cacheFile, cache)) {
-        this.persistedTemperature = this.last.temperature;
-        this.persistedHumidity = this.last.humidity;
-        this.persistedTemperatureObservedAt = this.temperatureObservedAt;
-        this.persistedHumidityObservedAt = this.humidityObservedAt;
-      }
-    }
-
-    if (changed) {
-      this.platform.log.info(
-        `Pushed to HomeKit: temp=${this.last.temperature ?? 'n/a'}°C ` +
-        `humidity=${this.last.humidity ?? 'n/a'}%`,
-      );
-    } else {
-      this.platform.log.debug('Reading unchanged within epsilon.');
-    }
-
-    return changed;
-  }
-
-  private hasMeaningfulChange(
-    current: number | null,
-    persisted: number | null,
-    epsilon: number,
-  ): boolean {
-    return current !== null && (persisted === null || Math.abs(current - persisted) >= epsilon);
-  }
-
-  private hasNewerFreshness(
-    currentValue: number | null,
-    observedAt: number | null,
-    persistedObservedAt: number | null,
-  ): boolean {
+  private hasMeaningfulChange(channel: SensorChannel): boolean {
     return (
-      currentValue !== null &&
-      observedAt !== null &&
-      (
-        persistedObservedAt === null ||
-        observedAt - persistedObservedAt >= CACHE_FRESHNESS_WRITE_INTERVAL_MS
-      )
+      channel.value !== null &&
+      (channel.persistedValue === null ||
+        Math.abs(channel.value - channel.persistedValue) >= channel.epsilon)
+    );
+  }
+
+  private hasNewerFreshness(channel: SensorChannel): boolean {
+    return (
+      channel.value !== null &&
+      channel.observedAt !== null &&
+      (channel.persistedObservedAt === null ||
+        channel.observedAt - channel.persistedObservedAt >= CACHE_FRESHNESS_WRITE_INTERVAL_MS)
     );
   }
 
   private update(
     service: Service,
-    characteristic: Parameters<Service['updateCharacteristic']>[0],
+    characteristic: CharacteristicRef,
     value: number | boolean,
   ): boolean {
     try {
@@ -399,32 +361,31 @@ export class NOAAWeatherAccessory {
   }
 
   private readCache(): CachedWeatherReading {
+    const empty: CachedWeatherReading = {
+      temperature: null,
+      humidity: null,
+      temperatureObservedAt: null,
+      humidityObservedAt: null,
+    };
     if (!fs.existsSync(this.cacheFile)) {
-      return {
-        temperature: null,
-        humidity: null,
-        temperatureObservedAt: null,
-        humidityObservedAt: null,
-      };
+      return empty;
     }
     try {
       const parsed = readJsonBounded(this.cacheFile) as Partial<CachedWeatherReading>;
-      const t = typeof parsed.temperature === 'number' && Number.isFinite(parsed.temperature)
-        ? clampTemperature(parsed.temperature) : null;
-      const h = typeof parsed.humidity === 'number' && Number.isFinite(parsed.humidity)
-        ? clampHumidity(parsed.humidity) : null;
       const now = Date.now();
-      const temperatureObservedAt =
-        typeof parsed.temperatureObservedAt === 'number' &&
-        Number.isFinite(parsed.temperatureObservedAt)
-          ? Math.min(parsed.temperatureObservedAt, now)
-          : null;
-      const humidityObservedAt =
-        typeof parsed.humidityObservedAt === 'number' &&
-        Number.isFinite(parsed.humidityObservedAt)
-          ? Math.min(parsed.humidityObservedAt, now)
-          : null;
-      return { temperature: t, humidity: h, temperatureObservedAt, humidityObservedAt };
+      const finite = (v: unknown): number | null =>
+        typeof v === 'number' && Number.isFinite(v) ? v : null;
+      const t = finite(parsed.temperature);
+      const h = finite(parsed.humidity);
+      const tAt = finite(parsed.temperatureObservedAt);
+      const hAt = finite(parsed.humidityObservedAt);
+      return {
+        temperature: t === null ? null : clampTemperature(t),
+        humidity: h === null ? null : clampHumidity(h),
+        // Cached timestamps, like network ones, may never sit in the future.
+        temperatureObservedAt: tAt === null ? null : Math.min(tAt, now),
+        humidityObservedAt: hAt === null ? null : Math.min(hAt, now),
+      };
     } catch {
       this.platform.log.warn('Corrupted weather cache - discarding.');
       try {
@@ -432,12 +393,7 @@ export class NOAAWeatherAccessory {
       } catch {
         /* ignore */
       }
-      return {
-        temperature: null,
-        humidity: null,
-        temperatureObservedAt: null,
-        humidityObservedAt: null,
-      };
+      return empty;
     }
   }
 }
