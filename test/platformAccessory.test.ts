@@ -79,6 +79,29 @@ describe('NOAAWeatherAccessory', () => {
 
   const cacheFile = () => path.join(dir, 'noaa-weather-last.json');
 
+  it('shows the active station in the accessory Model field', () => {
+    const h = makeHarness(dir);
+    const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+    const info = (h.accessory.getService as Mock).mock.results[0]?.value as FakeService;
+    expect(info.setCharacteristic).toHaveBeenCalledWith(Characteristic.Model, 'Weather Station');
+
+    acc.setStation('KSEA');
+    expect(info.updateCharacteristic).toHaveBeenCalledWith(Characteristic.Model, 'NWS Station KSEA');
+    acc.setStation('KPAE');
+    expect(info.updateCharacteristic).toHaveBeenLastCalledWith(Characteristic.Model, 'NWS Station KPAE');
+  });
+
+  it('survives a failed Model update', () => {
+    const h = makeHarness(dir);
+    const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');
+    const info = (h.accessory.getService as Mock).mock.results[0]?.value as FakeService;
+    info.updateCharacteristic.mockImplementationOnce(() => {
+      throw new Error('HAP rejected value');
+    });
+    expect(() => acc.setStation('KSEA')).not.toThrow();
+    expect(h.log.messages.some((m) => m.includes('Failed to update characteristic'))).toBe(true);
+  });
+
   it('reports change on first reading, no change when within epsilon', () => {
     const h = makeHarness(dir);
     const acc = new NOAAWeatherAccessory(h.platform, h.accessory, '0.0.0');

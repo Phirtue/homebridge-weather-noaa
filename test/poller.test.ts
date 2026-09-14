@@ -213,6 +213,23 @@ describe('ObservationPoller', () => {
     poller.stop();
   });
 
+  it('tells the sink which station is active on start and after failover', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const setStation = vi.fn();
+    const sink = { ...makeSink(), setStation };
+    const findReplacement = vi.fn(async () => ({ stationId: 'KPAE', observation: fresh() }));
+    const fetchObservation = vi.fn(async (id: string) => id === 'KSEA' ? stale() : fresh());
+    const { poller } = makePoller({ sink, fetchObservation, findReplacement });
+
+    poller.start();
+    expect(setStation).toHaveBeenCalledWith('KSEA');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(setStation).toHaveBeenLastCalledWith('KPAE');
+    expect(setStation).toHaveBeenCalledTimes(2);
+    poller.stop();
+  });
+
   it('fails over when the station id no longer exists (404)', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(T0);

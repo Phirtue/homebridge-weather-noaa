@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.11.0] - 2026-09-13
 
 ### Changed
 
@@ -10,6 +10,27 @@
   Homebridge = 9 cells). Homebridge itself already requires Node 20.18+
   or 22.10+, so most installations are unaffected. Users still on Node 20
   should upgrade the runtime before taking this release.
+- **The active station is visible in the Home app.** The accessory's
+  Model field now reads `NWS Station <id>` and updates when auto-discovery
+  fails over, so you can see which station is feeding your sensors — and
+  notice a switch — without reading logs. Until a station is resolved it
+  reads `Weather Station`, as before.
+- **Hourly metrics line now answers the useful questions.** In addition to
+  the transport counters it reports `station=<id>` (the station currently
+  feeding HomeKit), `failovers=<n>` (how many times auto-discovery
+  switched stations this run) and `lastSuccess=<ISO time>` (when a reading
+  last reached HomeKit).
+
+### Fixed
+
+- **Boot with an unsynchronized clock no longer corrupts the caches.**
+  Raspberry Pis have no real-time clock and boot at (or near) the epoch
+  until NTP syncs; Homebridge often starts first. Discovery previously ran
+  anyway, writing 1970 timestamps into the station and reading caches —
+  which then forced rediscovery on every boot and misjudged staleness. If
+  the system clock reads earlier than 2026-01-01 the plugin now defers
+  discovery on the existing 1→15 minute retry backoff, touching neither
+  cache nor the accessory's staleness state until time is plausible.
 
 ### Security
 
@@ -19,11 +40,6 @@
   or whose provenance attestation does not verify — fails the build. This
   complements the lockfile verifier (which proves the locked bytes were
   installed) by proving the registry itself served those bytes.
-- **Dev dependency update:** vitest 3.2.7 → 5.0.0, resolving
-  GHSA advisories for `vitest` and `@vitest/mocker` (path traversal in
-  the development server; never reachable from this plugin's runtime,
-  which does not ship or depend on vitest).
-
 - **Log sanitizer strips Unicode bidirectional and invisible format
   controls.** `sanitizeForLog` already removed C0/C1 control characters;
   it now also removes zero-width characters, RLO/LRO/PDF embedding and
@@ -31,23 +47,24 @@
   echoed from the NWS API or `config.json` can no longer make a log line
   *render* differently from how it is stored ("Trojan Source" spoofing)
   when users paste logs into GitHub issues or Discord.
-
-### Changed
-
-- **Hourly metrics line now answers the useful questions.** In addition to
-  the transport counters it reports `station=<id>` (the station currently
-  feeding HomeKit), `failovers=<n>` (how many times auto-discovery
-  switched stations this run) and `lastSuccess=<ISO time>` (when a reading
-  last reached HomeKit).
+- **Dev dependency update:** vitest 3.2.7 → 5.0.0, resolving
+  GHSA advisories for `vitest` and `@vitest/mocker` (path traversal in
+  the development server; never reachable from this plugin's runtime,
+  which does not ship or depend on vitest).
+- **Repository settings:** merges to `main` are now squash-only (linear,
+  one-commit-per-PR history that matches how every release has actually
+  been produced), and the squash commit is generated from the PR title
+  and body rather than from ad-hoc commit messages.
 
 ### Internal
 
 - The polling loop moved out of a 150-line closure in `platform.ts` into
   its own `ObservationPoller` class (`src/poller.ts`) with explicit state,
-  an injectable clock, and 16 direct unit tests covering cadence, the
+  an injectable clock, and 17 direct unit tests covering cadence, the
   adaptive multiplier, the one-minute floor, failover, the hourly search
-  cooldown, the 1.10.4 recovery regression and shutdown. The platform's
-  behaviour is unchanged; its existing tests pass without modification.
+  cooldown, the 1.10.4 recovery regression, station reporting and
+  shutdown. The platform's behaviour is unchanged; its pre-existing tests
+  pass without modification.
 - The "station unavailable" predicate (`UnusableObservationError` or an
   NWS 404/410) and the MADIS quality-control/finite-number validation each
   existed twice; both are now single functions.
@@ -55,6 +72,10 @@
   `SensorChannel` structure each instead of ten parallel fields, and the
   duplicated `setTemperatureActive`/`setHumidityActive` pair is one method.
   The on-disk cache format is unchanged.
+- ESLint formatting rules (`indent`, `quotes`, `semi`, `comma-dangle`,
+  `brace-style`, `object-curly-spacing`, `max-len`, `linebreak-style`)
+  migrated from ESLint core, where they are deprecated, to
+  `@stylistic/eslint-plugin`. No rule values changed.
 
 ### Maintenance
 
