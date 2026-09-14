@@ -9,10 +9,31 @@ updates:
     # them out of this repository's dependency PRs during that window.
     cooldown:
       default-days: 7
+    # Grouping rules. A package matches the first group that claims it.
+    #
+    # vitest publishes its runner and helper packages (@vitest/*) in
+    # lockstep and the lockfile pins them to identical versions, so a PR
+    # that bumps one without the others cannot install. Keeping them in
+    # one group also means a security fix for either lands as one change.
+    #
+    # Remaining dev-dependency minor/patch bumps arrive as one weekly PR:
+    # each is CI-gated identically and reviewing one diff a week is more
+    # reliable than reviewing six. Majors stay separate so a breaking
+    # change is never hidden inside routine maintenance.
+    groups:
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
     ignore:
       # @types/node majors track Node majors. Typings stay on the 22.x
       # line so they cannot accept APIs that do not exist on the oldest
-      # supported runtime (Node 20).
+      # supported runtime (Node 22).
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions

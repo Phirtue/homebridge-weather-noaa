@@ -7,7 +7,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Phirtue/homebridge-weather-noaa/badge)](https://scorecard.dev/viewer/?uri=github.com/Phirtue/homebridge-weather-noaa)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13651/badge)](https://www.bestpractices.dev/projects/13651)
 [![npm version](https://img.shields.io/npm/v/homebridge-weather-noaa.svg)](https://www.npmjs.com/package/homebridge-weather-noaa)
-![Node.js](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024%20%7C%2026-green)
+![Node.js](https://img.shields.io/badge/node-22%20%7C%2024%20%7C%2026-green)
 ![Homebridge](https://img.shields.io/badge/homebridge-v1%20%7C%20v2-blue)
 
 Temperature and humidity sensors for HomeKit, powered by the free
@@ -176,10 +176,10 @@ hours.
 
 | Requirement | Supported versions |
 | ----------- | ------------------ |
-| Node.js | 20, 22, 24, 26 |
+| Node.js | 22, 24, 26 |
 | Homebridge | 1.8+, 2.x |
 
-Every release is CI-tested across all twelve Node and Homebridge
+Every release is CI-tested across all nine Node and Homebridge
 combinations before it ships.
 
 ## License

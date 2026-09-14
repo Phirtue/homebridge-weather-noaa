@@ -1,5 +1,36 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Node.js 22 is now the minimum supported runtime.** Node 20 reached
+  end-of-life on 2026-04-30 and no longer receives security fixes; it has
+  been removed from `engines` and from the CI matrix (now 3 Node × 3
+  Homebridge = 9 cells). Homebridge itself already requires Node 20.18+
+  or 22.10+, so most installations are unaffected. Users still on Node 20
+  should upgrade the runtime before taking this release.
+
+### Security
+
+- **Registry signature and provenance verification in CI and release
+  builds.** `npm audit signatures` now runs after every install, so a
+  package whose tarball does not carry a valid npm registry signature —
+  or whose provenance attestation does not verify — fails the build. This
+  complements the lockfile verifier (which proves the locked bytes were
+  installed) by proving the registry itself served those bytes.
+- **Dev dependency update:** vitest 3.2.7 → 5.0.0, resolving
+  GHSA advisories for `vitest` and `@vitest/mocker` (path traversal in
+  the development server; never reachable from this plugin's runtime,
+  which does not ship or depend on vitest).
+
+### Maintenance
+
+- Dependabot now groups `vitest` with its `@vitest/*` helper packages,
+  which are published in lockstep and cannot be bumped independently, and
+  batches routine dev-dependency minor/patch updates into one weekly PR.
+  Major version bumps remain separate PRs.
+
 ## [1.10.5] - 2026-09-13
 
 ### Fixed
