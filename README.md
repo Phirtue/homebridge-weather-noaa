@@ -1,4 +1,4 @@
-# Homebridge NOAA Weather Plugin
+# Homebridge Weather NOAA Plugin
 
 [![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=for-the-badge&logoColor=%23FFFFFF&logo=homebridge)](https://github.com/homebridge/plugins/wiki/Verified-Plugins)
 
