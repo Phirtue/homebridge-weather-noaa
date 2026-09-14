@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- **A prerelease can no longer become npm `latest`.** The publish workflow
+  accepts `vX.Y.Z-beta.N` release tags for Homebridge beta testing, but
+  `npm publish` applies the `latest` dist-tag whenever `--tag` is omitted,
+  so cutting such a release would have handed the beta to every plain
+  `npm install`. Prerelease versions now publish under the `beta`
+  dist-tag; stable versions remain `latest`.
+- **The Homebridge version under test is now signature-audited too.** CI
+  installed the floating `homebridge@^1|latest|beta` after
+  `npm audit signatures` had already run, so that package and its
+  dependency tree were never checked. The install now precedes the audit.
+
+### Changed
+
+- **CI runs weekly as well as on push.** The `latest`/`beta` Homebridge
+  matrix cells float, so a Homebridge release that breaks the plugin was
+  only discovered on the next commit. A Tuesday cron closes that gap, and a
+  concurrency group cancels superseded 9-cell runs.
+- **Everything is linted, not just `src/`.** `npm run lint` now covers the
+  tests, the repository-owned verifier scripts and the tool configs
+  (~2,400 previously unlinted lines); two real findings were fixed.
+- **Unit tests cannot reach the live NWS API.** A Vitest setup file
+  replaces the global `fetch` with one that rejects loudly, so a test that
+  forgets to stub it fails instead of passing or failing on real weather.
+- `engines.homebridge` simplified to `^1.8.0 || ^2.0.0`; the
+  `^2.0.0-beta.0` clause was redundant once Homebridge 2.0 shipped.
+
 ## [1.11.0] - 2026-09-13
 
 ### Changed

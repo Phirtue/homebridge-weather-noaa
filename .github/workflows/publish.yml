@@ -264,18 +264,29 @@ jobs:
       # The registry integrity check below guarantees the transferred
       # tarball signed and attested on a re-run is byte-identical to what
       # the registry already serves.
+      #
+      # Dist-tag: npm applies `latest` whenever --tag is omitted, regardless
+      # of whether the version is a prerelease. The tag check above admits
+      # `vX.Y.Z-beta.N` on purpose (Homebridge beta testing), so a prerelease
+      # version is published under `beta` and can never become what a plain
+      # `npm install` resolves to.
       - name: Publish with provenance
         env:
           PKG: ${{ steps.release.outputs.name }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
+          dist_tag=latest
+          case "$VERSION" in
+            *-*) dist_tag=beta ;;
+          esac
           if npm view "$PKG@$VERSION" version >/dev/null 2>&1; then
             echo "::notice::$PKG@$VERSION is already on the registry; skipping publish (re-run after a post-publish failure)."
           else
             # Defense in depth: a tarball should never gain lifecycle scripts,
             # but publishing authority must not execute them if one is tampered.
-            npm publish "./$PKG-$VERSION.tgz" --ignore-scripts --provenance --access public
+            npm publish "./$PKG-$VERSION.tgz" --ignore-scripts --provenance --access public --tag "$dist_tag"
           fi
+          echo "Published (or found) $PKG@$VERSION under dist-tag $dist_tag"
 
       # Keyless (Sigstore) signature over the SBOM: the same OIDC identity
       # that authenticates the npm publish signs the release asset, so there
