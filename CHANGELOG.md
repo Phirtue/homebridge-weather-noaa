@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.10.5] - 2026-09-13
+
+### Fixed
+
+- **Polling could collapse into a request loop after a failed station
+  replacement search (v1.10.4 regression).** When every candidate station
+  was stale (for example during an NWS-wide observation outage) and the
+  original station then recovered on its own within the one-hour search
+  cooldown, the expired cooldown deadline shortened the poll delay to
+  1 ms once the hour passed, producing roughly 1,000 requests per second
+  against api.weather.gov until the station went stale again. The cooldown
+  is now cleared as soon as a fresh observation arrives, an expired
+  deadline can no longer shorten the schedule, and every scheduled poll is
+  clamped to a one-minute floor regardless of how it was computed.
+  **Users on 1.10.4 should upgrade.**
+
 ## [1.10.4] - 2026-09-07
 
 ### Fixed
