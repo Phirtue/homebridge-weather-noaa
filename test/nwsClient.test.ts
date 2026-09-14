@@ -143,6 +143,7 @@ describe('fetchJson', () => {
 
     const err = await client.fetchJson(URL_OK).catch((e: Error) => e);
     expect(err).toBeInstanceOf(Error);
+    // eslint-disable-next-line no-control-regex -- asserting the escape is absent
     expect((err as Error).message).not.toMatch(/[\r\n\u001b]/);
     expect((err as Error).message).not.toContain('x'.repeat(65));
   });

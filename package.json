@@ -7,7 +7,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "rimraf ./dist && tsc",
-    "lint": "eslint src --max-warnings=0",
+    "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "typecheck:test": "tsc -p tsconfig.test.json"
   },
@@ -31,7 +31,7 @@
     "url": "https://github.com/Phirtue/homebridge-weather-noaa/issues"
   },
   "engines": {
-    "homebridge": "^1.8.0 || ^2.0.0 || ^2.0.0-beta.0",
+    "homebridge": "^1.8.0 || ^2.0.0",
     "node": "^22 || ^24 || ^26"
   },
   "files": [

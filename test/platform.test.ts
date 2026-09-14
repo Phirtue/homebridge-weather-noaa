@@ -327,8 +327,9 @@ describe('discovery-blocked boot', () => {
     try {
       // A Pi without an RTC boots at (or near) the epoch until NTP syncs.
       vi.setSystemTime(new Date('1970-01-01T00:00:05Z'));
-      const fetchMock = vi.fn(async (_input: string | URL | Request) =>
-        new Response('{}', { status: 200 }));
+      const fetchMock = vi.fn<(input: string | URL | Request) => Promise<Response>>(
+        async () => new Response('{}', { status: 200 }),
+      );
       vi.stubGlobal('fetch', fetchMock);
       const chainableService = () => {
         const svc: Record<string, unknown> = { updateCharacteristic: vi.fn() };

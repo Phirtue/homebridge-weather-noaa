@@ -36,4 +36,18 @@ export default defineConfig([
       '@typescript-eslint/no-unused-vars': ['error', { caughtErrors: 'none' }],
     },
   },
+  {
+    // Repository-owned Node scripts (lockfile and pack verifiers) and the
+    // tool configs. Plain ESM run directly by node; declare the handful of
+    // Node globals they use rather than pulling in the `globals` package.
+    files: ['scripts/**/*.mjs', '*.mjs', '*.ts'],
+    languageOptions: {
+      globals: {
+        Buffer: 'readonly',
+        URL: 'readonly',
+        console: 'readonly',
+        process: 'readonly',
+      },
+    },
+  },
 ]);
