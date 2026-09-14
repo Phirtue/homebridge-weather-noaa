@@ -137,6 +137,26 @@ describe('ObservationPoller', () => {
     poller.stop();
   });
 
+  it('hands a stale manual-station reading to the accessory but does not count it as a success', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    // No findReplacement: an explicitly configured station never fails over,
+    // so the stale observation reaches the sink (which marks it inactive).
+    const { poller, sink } = makePoller({ fetchObservation: vi.fn(async () => stale()) });
+
+    poller.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sink.applyReading).toHaveBeenCalledTimes(1);
+    expect(poller.metrics.lastSuccessAt).toBeNull();
+    poller.stop();
+  });
+
+  it('names its unusable-observation error so logs identify it', () => {
+    const err = new UnusableObservationError('nothing usable');
+    expect(err.name).toBe('UnusableObservationError');
+    expect(String(err)).toBe('UnusableObservationError: nothing usable');
+  });
+
   it('relaxes the cadence after repeated unchanged readings when adaptive', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(T0);

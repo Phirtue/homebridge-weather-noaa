@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { NwsClient, NwsHttpError, describeUrl, withJitter } from '../src/nwsClient.js';
+import { NwsClient, NwsHttpError, describeUrl, withJitter, withUpwardJitter } from '../src/nwsClient.js';
 import { fakeResponse, makeFakeLog } from './helpers.js';
 
 const URL_OK = 'https://api.weather.gov/points/47.6204,-122.3494';
@@ -21,6 +21,16 @@ describe('withJitter', () => {
     for (let i = 0; i < 1000; i++) {
       const v = withJitter(10_000);
       expect(v).toBeGreaterThanOrEqual(9_000);
+      expect(v).toBeLessThanOrEqual(11_000);
+    }
+  });
+});
+
+describe('withUpwardJitter', () => {
+  it('never goes below the input and stays within +10%', () => {
+    for (let i = 0; i < 1000; i++) {
+      const v = withUpwardJitter(10_000);
+      expect(v).toBeGreaterThanOrEqual(10_000);
       expect(v).toBeLessThanOrEqual(11_000);
     }
   });
@@ -119,6 +129,64 @@ describe('fetchJson', () => {
     // retryCount reflects the 4 retries that actually happened.
     expect(client.metrics.apiFailures).toBe(1);
     expect(client.metrics.retryCount).toBe(4);
+  });
+
+  it('gives up after exhausting retries on persistent 429s, counting once', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () =>
+      fakeResponse({ url: URL_OK, status: 429, headers: { 'retry-after': '5' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { client } = makeClient();
+
+    const promise = client.fetchJson(URL_OK);
+    const settled = promise.catch((err: Error) => err);
+    // Four waits of 5s (+10% upward jitter); no sleep after the last 429.
+    await vi.advanceTimersByTimeAsync(30_000);
+    const result = await settled;
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toMatch(/exhausted 4 retries/);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(client.metrics.rateLimitedCount).toBe(5);
+    expect(client.metrics.retryCount).toBe(4);
+    expect(client.metrics.apiFailures).toBe(1);
+  });
+
+  it('never retries before the Retry-After the server asked for', async () => {
+    vi.useFakeTimers();
+    // Jitter at its minimum: the sleep must be exactly the header value.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(fakeResponse({
+        url: URL_OK, status: 429, headers: { 'retry-after': '7' },
+      }))
+      .mockResolvedValueOnce(fakeResponse({ url: URL_OK, body: '{"ok":true}' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { client } = makeClient();
+
+    const promise = client.fetchJson(URL_OK);
+    await vi.advanceTimersByTimeAsync(6_999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(promise).resolves.toEqual({ ok: true });
+  });
+
+  it('keeps a jittered Retry-After inside the 5 minute cap', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(1); // maximum upward jitter
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(fakeResponse({
+        url: URL_OK, status: 429, headers: { 'retry-after': '300' },
+      }))
+      .mockResolvedValueOnce(fakeResponse({ url: URL_OK, body: '{"ok":true}' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { client } = makeClient();
+
+    const promise = client.fetchJson(URL_OK);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(promise).resolves.toEqual({ ok: true });
   });
 
   it('fails immediately on non-retryable status codes', async () => {
@@ -255,6 +323,13 @@ describe('redirect handling', () => {
 });
 
 describe('describeUrl', () => {
+  it('caps the length of a server-supplied redirect target', () => {
+    const long = `https://api.weather.gov/stations/${'K'.repeat(5000)}`;
+    const out = describeUrl(long);
+    expect(out.length).toBe(201);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
   it('redacts only the /points coordinates', () => {
     expect(describeUrl('https://api.weather.gov/points/47.6204,-122.3494'))
       .toBe('https://api.weather.gov/points/<coordinates>');
