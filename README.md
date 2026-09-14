@@ -16,8 +16,13 @@ The plugin automatically finds a nearby observation station with current
 readings and fails over if that station stops reporting, or you can point
 it at a specific station.
 
-## What's New in v1.10.4
+## What's New in v1.10.5
 
+- **Fixes a v1.10.4 polling regression.** After a failed station
+  replacement search, a recovering station could drive the poll interval
+  down to milliseconds. Every scheduled poll now has a one-minute floor
+  and the search cooldown clears on the first fresh reading. Users on
+  1.10.4 should upgrade.
 - **Discovery checks station health.** Up to ten nearby candidates are
   probed, and only a station with a recent timestamped observation is
   cached.
@@ -27,7 +32,7 @@ it at a specific station.
   within one hour.
 - **Manual choices stay pinned.** An explicit `stationId` is never
   switched automatically.
-- **Test suite.** 140 tests cover station selection, failover, bounded API
+- **Test suite.** 142 tests cover station selection, failover, bounded API
   load, adaptive polling, shutdown races, and the existing security and
   compatibility guarantees.
 
