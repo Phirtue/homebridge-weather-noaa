@@ -1,4 +1,4 @@
-# Homebridge NOAA Weather Plugin
+# Homebridge Weather NOAA Plugin
 
 [![verified-by-homebridge](https://img.shields.io/badge/homebridge-verified-blueviolet?color=%23491F59&style=for-the-badge&logoColor=%23FFFFFF&logo=homebridge)](https://github.com/homebridge/plugins/wiki/Verified-Plugins)
 
@@ -16,12 +16,35 @@ The plugin automatically finds a nearby observation station with current
 readings and fails over if that station stops reporting, or you can point
 it at a specific station.
 
-## What's New in v1.11.0
+## What's New in v1.11.1
+
+A code-review release: no new features, a handful of correctness and
+supply-chain fixes.
+
+- **`Retry-After` is honoured exactly.** The client could previously retry
+  up to 10% before the time NWS asked for; the header is now a floor.
+- **Change detection matches HomeKit.** Readings are considered changed
+  only when they move by at least the HomeKit display step (0.1 °C, 1%),
+  so sensor noise no longer resets adaptive polling or rewrites the cache.
+- **Complete Unicode log hardening.** The sanitizer strips every Unicode
+  format character (not a hand-picked list), so no bidirectional or
+  invisible control can survive into a log line.
+- **Release pipeline.** A prerelease version can no longer be published
+  as npm `latest`; the Homebridge version under test in CI is now
+  signature-audited too; CI also runs weekly to catch a breaking
+  Homebridge release early.
+- Clearer errors for a duplicate platform block, config warnings logged
+  once instead of on every retry, and 188 tests (was 166) including full
+  first-run lifecycle coverage.
+
+### v1.11.0
 
 - **Node.js 22+ required.** Node 20 is end-of-life and has been dropped;
   the plugin is tested on Node 22, 24 and 26.
 - **See your station in the Home app.** The accessory's Model field shows
-  `NWS Station <id>` and updates when auto-discovery fails over.
+  `NWS Station <id>`. It is set when a station is resolved and again on
+  failover; the Home app reads accessory information when it next
+  refreshes the accessory, so a change may not appear instantly.
 - **Clock-safe boot.** On a Raspberry Pi that starts before NTP has set
   the clock, discovery now waits for a plausible time instead of writing
   epoch timestamps into the caches.
@@ -32,7 +55,7 @@ it at a specific station.
 - **Richer hourly metrics** (active station, failover count, last
   successful reading) and an internal refactor that moves polling into
   a dedicated, directly tested class.
-- **Test suite.** 166 tests cover station selection, failover, bounded API
+- **Test suite.** 188 tests cover station selection, failover, bounded API
   load, adaptive polling, shutdown races, clock sanity, and the existing
   security and compatibility guarantees.
 
@@ -108,7 +131,8 @@ The example coordinates are the Space Needle in Seattle, WA.
 
 ### 4. Run
 
-Two accessories appear in HomeKit under "NOAA Weather":
+One accessory, "NOAA Weather", appears in HomeKit with two sensor
+services (they share a room and tile group, but each shows its own value):
 
 - `NOAA Temperature`
 - `NOAA Humidity`
