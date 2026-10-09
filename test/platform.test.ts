@@ -1187,6 +1187,9 @@ describe('first-run lifecycle', () => {
 
   function makeLifecycleApi(dir: string) {
     const handlers = new Map<string, () => void>();
+    // `handlers` keeps the last listener per event; this keeps all of them,
+    // in registration order, for tests that construct several blocks.
+    const listeners: Array<{ event: string; cb: () => void }> = [];
     const registered: unknown[] = [];
     const unregistered: unknown[] = [];
     const api = {
@@ -1197,6 +1200,7 @@ describe('first-run lifecycle', () => {
       },
       on: (event: string, cb: () => void) => {
         handlers.set(event, cb);
+        listeners.push({ event, cb });
       },
       user: { persistPath: () => dir },
       // `new this.api.platformAccessory(...)`: must be constructible.
@@ -1212,7 +1216,7 @@ describe('first-run lifecycle', () => {
         unregistered.push(...accs);
       }),
     } as unknown as API;
-    return { api, handlers, registered, unregistered };
+    return { api, handlers, listeners, registered, unregistered };
   }
 
   it('creates and registers the accessory, then polls, on a first run with no cache', async () => {
@@ -1314,14 +1318,61 @@ describe('first-run lifecycle', () => {
     expect(log.messages.filter((m) => m.includes('NOAA Platform Metrics')).length).toBe(1);
   });
 
-  it('warns when a second platform block is configured in the same process', () => {
-    const api = makeFakeApi();
-    const first = makeFakeLog();
-    const second = makeFakeLog();
-    new NOAAWeatherPlatform(first as Logging, { platform: 'NOAAWeather', ...VALID } as PlatformConfig, api);
-    new NOAAWeatherPlatform(second as Logging, { platform: 'NOAAWeather', ...VALID } as PlatformConfig, api);
-    expect(first.messages.some((m) => m.includes('Another NOAAWeather platform block'))).toBe(false);
-    expect(second.messages.some((m) => m.includes('Another NOAAWeather platform block'))).toBe(true);
+  it('starts only the most recently constructed block when two are configured', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
+    try {
+      const fetchMock = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/points/')) {
+          return new Response(pointBody, { status: 200 });
+        }
+        if (url.includes('/gridpoints/')) {
+          return new Response(stationsBody, { status: 200 });
+        }
+        return new Response(observationBody, { status: 200 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const { api, listeners, registered } = makeLifecycleApi(dir);
+      const firstLog = makeFakeLog();
+      const secondLog = makeFakeLog();
+      const config = { platform: 'NOAAWeather', ...VALID } as PlatformConfig;
+      new NOAAWeatherPlatform(firstLog as Logging, config, api);
+      new NOAAWeatherPlatform(secondLog as Logging, config, api);
+      const emit = (event: string): void => {
+        for (const listener of listeners.filter((l) => l.event === event)) {
+          listener.cb();
+        }
+      };
+      const metricsLines = (log: FakeLog): number =>
+        log.messages.filter((m) => m.includes('NOAA Platform Metrics')).length;
+      const idleLines = [
+        expect.stringContaining('Another NOAAWeather platform block is configured'),
+      ];
+
+      emit('didFinishLaunching');
+      await vi.waitFor(() => expect(registered).toHaveLength(1));
+
+      // The earlier block explains itself and does nothing else.
+      expect(firstLog.messages.filter((m) => !m.startsWith('[debug]'))).toEqual(idleLines);
+      // The later block runs a normal first launch: points, stations, one probe.
+      expect(secondLog.messages.some((m) => m.includes('Created new NOAA Weather accessory'))).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      // Only the running block has an hourly metrics timer and a shutdown line.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      expect(metricsLines(firstLog)).toBe(0);
+      expect(metricsLines(secondLog)).toBe(1);
+      emit('shutdown');
+      expect(metricsLines(secondLog)).toBe(2);
+      await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1000);
+      expect(metricsLines(secondLog)).toBe(2);
+      expect(firstLog.messages.filter((m) => !m.startsWith('[debug]'))).toEqual(idleLines);
+    } finally {
+      vi.useRealTimers();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

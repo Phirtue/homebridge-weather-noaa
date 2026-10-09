@@ -35,6 +35,19 @@
   candidates were found and which one was selected. The cache file still
   records the grid for compatibility.
 
+### Fixed
+
+- **A duplicate `NOAAWeather` block no longer runs a second poller.** The
+  1.11.1 guard only logged an error, and both blocks still started.
+  Homebridge 2.4 skips a duplicate-UUID registration with a warning
+  instead of throwing, so the extra block polled NWS through an accessory
+  HomeKit never saw, doubling the request rate and writing the same cache
+  files. Only the most recently configured block now starts, matching the
+  instance Homebridge hands the cached accessory to; any other block logs
+  an error and stays idle, with no requests, timers, cache writes or
+  metrics. Two blocks on separate child bridges run in separate processes
+  and are not covered.
+
 ## [1.11.1] - 2026-09-13
 
 A code-review release: no new features. Documentation, pipeline and
