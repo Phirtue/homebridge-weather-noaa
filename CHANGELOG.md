@@ -1,6 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [1.11.2] - 2026-10-08
+
+A security-review release: no new features and no config changes. A full
+security review of 1.11.1 found no exploitable vulnerabilities; the
+changes below harden the release pipeline, keep the NWS grid cell out of
+the log, and enforce the one-platform-block rule instead of only
+reporting it.
 
 ### Security
 
