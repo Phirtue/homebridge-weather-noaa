@@ -1,12 +1,20 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   readStationCache, writeJsonAtomic, CACHE_MAX_BYTES, GRID_ID_RE, STATION_ID_RE, PointsCache,
 } from '../src/stationCache.js';
 import { makeFakeLog } from './helpers.js';
+
+// fstatSync delegates to the real implementation unless a test overrides
+// it to under-report a size, as if the file grew after the check.
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return { ...actual, fstatSync: vi.fn(actual.fstatSync) };
+});
+const actualFs = await vi.importActual<typeof import('fs')>('fs');
 
 const LAT = 47.6204;
 const LON = -122.3494;
@@ -81,6 +89,26 @@ describe('station cache', () => {
     const result = readStationCache(log, file, LAT, LON);
     expect(result).toEqual({ stationId: null, wasCorrupted: true });
     expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('stops reading at the cap when the file outgrows the size check', () => {
+    const padded = { ...validCache(), pad: 'x'.repeat(CACHE_MAX_BYTES + 1) };
+    fs.writeFileSync(file, JSON.stringify(padded));
+    vi.mocked(fs.fstatSync).mockImplementationOnce(
+      (fd) => Object.assign(actualFs.fstatSync(fd), { size: 100 }),
+    );
+    const result = readStationCache(log, file, LAT, LON);
+    expect(result).toEqual({ stationId: null, wasCorrupted: true });
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('still reads a file of exactly the capped size', () => {
+    const cache = validCache();
+    const base = JSON.stringify({ ...cache, pad: '' });
+    const exact = JSON.stringify({ ...cache, pad: 'x'.repeat(CACHE_MAX_BYTES - base.length) });
+    fs.writeFileSync(file, exact);
+    expect(fs.statSync(file).size).toBe(CACHE_MAX_BYTES);
+    expect(readStationCache(log, file, LAT, LON)).toEqual({ stationId: 'KSEA', wasCorrupted: false });
   });
 
   it('refuses to read through a symlinked cache file and removes the link', () => {

@@ -72,8 +72,10 @@ export function writeJsonAtomic(log: Logging, file: string, data: unknown): bool
  *    at something outside the persist directory;
  *  - non-regular files (a FIFO or device such as /dev/zero) are refused,
  *    and O_NONBLOCK keeps the open itself from hanging on a FIFO;
- *  - size is checked on the open descriptor (no check-then-read race) and
- *    capped at CACHE_MAX_BYTES so a huge file is never read into memory.
+ *  - size is checked on the open descriptor, so the file cannot be swapped
+ *    between the check and the read, and the read itself stops one byte
+ *    past CACHE_MAX_BYTES, so a file that grows after the check is
+ *    rejected instead of being read into memory.
  * Throws on any problem; callers treat every throw as "corrupt".
  */
 export function readJsonBounded(file: string): unknown {
@@ -87,7 +89,19 @@ export function readJsonBounded(file: string): unknown {
     if (stat.size > CACHE_MAX_BYTES) {
       throw new Error(`cache file is ${stat.size} bytes; cap is ${CACHE_MAX_BYTES}`);
     }
-    return JSON.parse(fs.readFileSync(fd, 'utf8'));
+    const buf = Buffer.alloc(CACHE_MAX_BYTES + 1);
+    let length = 0;
+    for (;;) {
+      const n = fs.readSync(fd, buf, length, buf.length - length, null);
+      if (n === 0) {
+        break;
+      }
+      length += n;
+      if (length === buf.length) {
+        throw new Error(`cache file grew past ${CACHE_MAX_BYTES} bytes while being read`);
+      }
+    }
+    return JSON.parse(buf.toString('utf8', 0, length));
   } finally {
     fs.closeSync(fd);
   }

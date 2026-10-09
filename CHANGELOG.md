@@ -29,6 +29,13 @@
   (optionally a required reviewer), then set environment name `release`
   on the npm trusted publisher. Doing the npm step before this change is
   on `main` would make the next publish fail.
+- **Cache reads are bounded by the read itself, not only by the size check
+  before it.** The size was checked on the open descriptor, which stops the
+  file from being swapped, but the read then ran to end of file, so a cache
+  file that grew between the two calls was read in full. The read now stops
+  one byte past the 64 KB cap and treats a full buffer as a corrupt file.
+  Exploiting the gap needed a process already writing as the Homebridge
+  user.
 
 ### Privacy
 
