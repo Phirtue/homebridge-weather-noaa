@@ -132,6 +132,14 @@ running any build tooling. Provenance proves which workflow built a
 tarball, not that nothing else on the runner touched it, so the
 development toolchain never runs where the published bytes are made.
 
+The `publish` job runs in the `release` GitHub environment, so its OIDC
+token names that environment. Maintainer setup, in this order: once the
+workflow referencing it is on `main`, restrict the `release` environment
+in the repository settings to deployments from `v*` tags (optionally with
+a required reviewer), then set `release` as the environment on the npm
+trusted publisher. Setting it on npm before the workflow references the
+environment would make the next publish fail.
+
 ### Privacy
 
 The plugin sends nothing anywhere except `api.weather.gov`. The

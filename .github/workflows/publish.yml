@@ -223,6 +223,10 @@ jobs:
   # check out the repository, install dependencies, or execute build tools.
   publish:
     needs: package
+    # The OIDC token then names this environment, so the npm trusted
+    # publisher can require it, and the repository settings can restrict
+    # its deployments to v* tags or require an approval.
+    environment: release
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

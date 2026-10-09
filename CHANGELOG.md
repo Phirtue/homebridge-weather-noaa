@@ -21,6 +21,14 @@
   Both are CPU or stack-exhaustion bugs in development tooling, never
   reachable from this plugin's runtime, which ships zero dependencies. Both
   fixed versions were past the 7-day cooldown when adopted.
+- **The publish job runs in a `release` GitHub environment.** Its OIDC
+  token now names the environment, so the npm trusted publisher can
+  require it and the repository settings can limit deployments to `v*`
+  tags or require an approval. Maintainer steps after merging, in order:
+  protect the `release` environment with a deployment tag rule `v*`
+  (optionally a required reviewer), then set environment name `release`
+  on the npm trusted publisher. Doing the npm step before this change is
+  on `main` would make the next publish fail.
 
 ### Privacy
 
