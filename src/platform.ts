@@ -126,13 +126,18 @@ interface AutoStationContext {
 }
 
 /**
- * Homebridge hands every platform block the same API object, so this is
- * "has a NOAAWeather block already been constructed in this process".
+ * Homebridge hands every platform block the same API object, so this maps
+ * it to the NOAAWeather block constructed most recently in this process.
  * config.schema.json marks the platform `singular`, but that only binds
- * the UI: a hand-edited config.json can hold two blocks, which would then
- * fight over one fixed accessory UUID and the same two cache files.
+ * the UI: a hand-edited config.json can hold two blocks, which would drive
+ * one fixed accessory UUID and the same two cache files and double the
+ * request rate against the free NWS API. Only the latest block starts,
+ * because Homebridge routes cached accessories to the most recently
+ * registered platform instance, and Homebridge 2.4 skips a duplicate-UUID
+ * registration with a warning instead of throwing: an earlier block would
+ * poll through an accessory that HomeKit never sees.
  */
-const constructedFor = new WeakSet<API>();
+const latestFor = new WeakMap<API, NOAAWeatherPlatform>();
 
 export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
@@ -147,6 +152,8 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
   private handler: NOAAWeatherAccessory | null = null;
   private poller: ObservationPoller | null = null;
   private shuttingDown = false;
+  /** A duplicate block (see latestFor): no discovery, polling, timers or metrics. */
+  private idle = false;
   /** Parsed once; discovery retries must not re-log the same config warnings. */
   private parsedConfig: PluginConfig | null | undefined;
 
@@ -158,30 +165,33 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
     this.client = new NwsClient(log, this.buildUserAgent());
-
-    if (constructedFor.has(api)) {
-      this.log.error(
-        'Another NOAAWeather platform block is already configured. Only one is ' +
-        'supported: both blocks would drive the same HomeKit accessory and cache ' +
-        'files. Remove the duplicate block from config.json.',
-      );
-    } else {
-      constructedFor.add(api);
-    }
+    latestFor.set(api, this);
 
     this.log.debug('Finished initializing platform:', this.config.name);
 
+    // Every block is constructed before launch, so only now is it known
+    // whether a later block replaced this one.
     this.api.on('didFinishLaunching', () => {
+      if (this.shuttingDown) {
+        return;
+      }
+      if (latestFor.get(this.api) !== this) {
+        this.idle = true;
+        this.log.error(
+          'Another NOAAWeather platform block is configured. Only one is supported, ' +
+          'so this block stays idle. Remove the duplicate block from config.json.',
+        );
+        return;
+      }
+      const metricsTimer = setInterval(() => this.logMetrics(), 60 * 60 * 1000);
+      metricsTimer.unref();
+      this.timers.add(metricsTimer);
       this.discoverDevices().catch((err) => {
         this.log.error('Unhandled error in discoverDevices:', err);
       });
     });
 
     this.api.on('shutdown', () => this.shutdown());
-
-    const metricsTimer = setInterval(() => this.logMetrics(), 60 * 60 * 1000);
-    metricsTimer.unref();
-    this.timers.add(metricsTimer);
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
@@ -202,7 +212,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
       clearTimeout(t);
     }
     this.timers.clear();
-    this.logMetrics();
+    if (!this.idle) {
+      this.logMetrics();
+    }
   }
 
   /**
@@ -442,8 +454,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     excludeStationId?: string,
   ): Promise<StationSelection | null> {
     try {
-      // The coordinates themselves are deliberately kept out of the log:
-      // Homebridge logs get pasted into public bug reports.
+      // Neither the coordinates nor the grid cell they resolve to is logged:
+      // Homebridge logs get pasted into public bug reports, and the cell
+      // locates the user to about 2.5 km.
       this.log.info('Fetching NOAA grid data for the configured coordinates.');
 
       const point = await this.client.fetchJson<PointResponse>(
@@ -467,8 +480,6 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         return null;
       }
 
-      this.log.info(`Grid location: ${gridId}/${gridX},${gridY}`);
-
       const stations = await this.client.fetchJson<GridpointStationsResponse>(
         `${NWS_API_BASE}/gridpoints/${encodeURIComponent(gridId)}/${gridX},${gridY}/stations`,
       );
@@ -484,7 +495,12 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         this.log.error('No valid NOAA stations found for grid cell.');
         return null;
       }
-      this.log.info(`Station candidates: ${candidates.join(', ')}`);
+      // Ordered by distance, the full list narrows the location much as the
+      // grid cell does, so it stays at debug.
+      this.log.info(
+        `Found ${candidates.length} candidate NOAA station${candidates.length === 1 ? '' : 's'}.`,
+      );
+      this.log.debug(`Station candidates: ${candidates.join(', ')}`);
 
       let selection: StationSelection | null = null;
       for (const candidate of candidates) {

@@ -16,7 +16,28 @@ The plugin automatically finds a nearby observation station with current
 readings and fails over if that station stops reporting, or you can point
 it at a specific station.
 
-## What's New in v1.11.1
+## What's New in v1.11.2
+
+A security-review release: no new features and no config changes. A full
+review of 1.11.1 found no exploitable vulnerabilities; these changes
+tighten privacy, robustness and the release pipeline.
+
+- **The grid cell stays out of the log.** Coordinates were already never
+  logged; the NWS grid cell they resolve to (about 2.5 km across) is now
+  kept out of log lines and error messages too, and the distance-ordered
+  list of candidate stations moved to debug level.
+- **One platform block, enforced.** A duplicate `NOAAWeather` block in a
+  hand-edited `config.json` now stays idle with a clear error instead of
+  running a second poller against the NWS API.
+- **Bounded cache reads.** A cache file is never read past its 64 KB cap,
+  even if it grows while being read.
+- **Release pipeline.** The published tarball is built on a runner where
+  only npm and the TypeScript compiler execute; linting and tests run in
+  a separate job. Publishing runs in a dedicated `release` environment.
+- Two development-only dependency advisories cleared, and 193 tests (was
+  188).
+
+### v1.11.1
 
 A code-review release: no new features, a handful of correctness and
 supply-chain fixes.
@@ -145,8 +166,9 @@ services (they share a room and tile group, but each shows its own value):
 - Coordinates are rounded to 2 decimal places (roughly 1 km) before
   they are used. NWS resolves them to a 2.5 km grid cell, so this
   selects the same station in practice while keeping your exact
-  address out of requests, cache files and logs. If you need a
-  particular station, set `stationId`.
+  address out of requests, cache files and logs. The grid cell itself
+  is kept out of the logs too. If you need a particular station, set
+  `stationId`.
 - Per the [NWS documentation](https://www.weather.gov/documentation/services-web-api),
   observations can lag up to 20 minutes due to quality-control
   processing, so refresh intervals shorter than 15 minutes provide
@@ -189,7 +211,8 @@ plugin. Every release can be verified independently:
   list is asserted against a checked-in manifest before every publish.
 - **Privacy by default.** No telemetry, no third-party services. The
   only outbound connection is to `api.weather.gov`, coordinates are
-  coarsened to ~1 km before use, and they are never written to the log.
+  coarsened to ~1 km before use, and neither they nor the NWS grid cell
+  they resolve to is ever written to the log.
 
 **Verify it yourself:** [VERIFYING.md](./VERIFYING.md) has the exact
 `npm audit signatures`, `slsa-verifier`, and `cosign verify-blob`

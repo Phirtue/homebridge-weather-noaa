@@ -1,5 +1,74 @@
 # Changelog
 
+## [1.11.2] - 2026-10-08
+
+A security-review release: no new features and no config changes. A full
+security review of 1.11.1 found no exploitable vulnerabilities; the
+changes below harden the release pipeline, keep the NWS grid cell out of
+the log, and enforce the one-platform-block rule instead of only
+reporting it.
+
+### Security
+
+- **The release tarball is now built where only npm and TypeScript run.**
+  The publish workflow's unprivileged build job ran ESLint, Vitest and
+  their dependency trees on the same runner that compiled, packed and
+  hashed the tarball, after `dist/` existed and before `npm pack`. That job
+  could not request npm credentials, but a compromised development
+  dependency could have altered the published bytes, and npm and SLSA
+  provenance would still have verified them. Lint and tests now run in a
+  separate `verify` job. A fresh `package` job runs only after `verify`
+  passes, compiles with `tsc` directly (skipping `rimraf` and its
+  dependency chain) and packs the tarball.
+- **Dev dependency update:** `brace-expansion` 5.0.9 → 5.0.12
+  (GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p; reached
+  through ESLint's `minimatch`) and `source-map-js` 1.2.1 → 1.2.2
+  (GHSA-68fv-2mgg-jv7q; reached through Vitest's `vite` and `postcss`).
+  Both are CPU or stack-exhaustion bugs in development tooling, never
+  reachable from this plugin's runtime, which ships zero dependencies. Both
+  fixed versions were past the 7-day cooldown when adopted.
+- **The publish job runs in a `release` GitHub environment.** Its OIDC
+  token now names the environment, so the npm trusted publisher can
+  require it and the repository settings can limit deployments to `v*`
+  tags or require an approval. Maintainer steps after merging, in order:
+  protect the `release` environment with a deployment tag rule `v*`
+  (optionally a required reviewer), then set environment name `release`
+  on the npm trusted publisher. Doing the npm step before this change is
+  on `main` would make the next publish fail.
+- **Cache reads are bounded by the read itself, not only by the size check
+  before it.** The size was checked on the open descriptor, which stops the
+  file from being swapped, but the read then ran to end of file, so a cache
+  file that grew between the two calls was read in full. The read now stops
+  one byte past the 64 KB cap and treats a full buffer as a corrupt file.
+  Exploiting the gap needed a process already writing as the Homebridge
+  user.
+
+### Privacy
+
+- **The NWS grid cell no longer appears in the log.** Coordinates were
+  already kept out, but the discovery line `Grid location: …`, the
+  cached-station line written on every boot, and HTTP error messages for
+  `/gridpoints/…` URLs still named the 2.5 km grid cell, which the public
+  NWS API maps straight back to an outline on the map. Those lines no
+  longer carry it, and error messages show `/gridpoints/<grid>`. The
+  distance-ordered list of candidate stations narrows the location in a
+  similar way, so it moved to debug level; info level now reports how many
+  candidates were found and which one was selected. The cache file still
+  records the grid for compatibility.
+
+### Fixed
+
+- **A duplicate `NOAAWeather` block no longer runs a second poller.** The
+  1.11.1 guard only logged an error, and both blocks still started.
+  Homebridge 2.4 skips a duplicate-UUID registration with a warning
+  instead of throwing, so the extra block polled NWS through an accessory
+  HomeKit never saw, doubling the request rate and writing the same cache
+  files. Only the most recently configured block now starts, matching the
+  instance Homebridge hands the cached accessory to; any other block logs
+  an error and stays idle, with no requests, timers, cache writes or
+  metrics. Two blocks on separate child bridges run in separate processes
+  and are not covered.
+
 ## [1.11.1] - 2026-09-13
 
 A code-review release: no new features. Documentation, pipeline and

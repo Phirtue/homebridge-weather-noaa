@@ -225,6 +225,16 @@ describe('fetchJson', () => {
     expect((err as Error).message).not.toMatch(/47\.6204|122\.3494/);
   });
 
+  it('redacts the grid cell from error messages', async () => {
+    const gridUrl = 'https://api.weather.gov/gridpoints/SEW/124,67/stations';
+    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse({ url: gridUrl, status: 404 })));
+    const { client } = makeClient();
+    const err = await client.fetchJson(gridUrl).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(NwsHttpError);
+    expect((err as Error).message).toContain('/gridpoints/<grid>/stations');
+    expect((err as Error).message).not.toMatch(/SEW|124,67/);
+  });
+
   it('does not expose malformed response text through JSON parse errors', async () => {
     vi.stubGlobal('fetch', vi.fn(async () =>
       fakeResponse({ url: URL_OK, body: '{"secret":"body-fragment"' }),
@@ -330,11 +340,15 @@ describe('describeUrl', () => {
     expect(out.endsWith('…')).toBe(true);
   });
 
-  it('redacts only the /points coordinates', () => {
+  it('redacts the /points coordinates and the /gridpoints cell, not station paths', () => {
     expect(describeUrl('https://api.weather.gov/points/47.6204,-122.3494'))
       .toBe('https://api.weather.gov/points/<coordinates>');
     expect(describeUrl('https://api.weather.gov/points/47.6204,-122.3494/stations'))
       .toBe('https://api.weather.gov/points/<coordinates>/stations');
+    expect(describeUrl('https://api.weather.gov/gridpoints/SEW/124,67/stations'))
+      .toBe('https://api.weather.gov/gridpoints/<grid>/stations');
+    expect(describeUrl('https://api.weather.gov/gridpoints/SEW/124,67'))
+      .toBe('https://api.weather.gov/gridpoints/<grid>');
     expect(describeUrl('https://api.weather.gov/stations/KSEA/observations/latest'))
       .toBe('https://api.weather.gov/stations/KSEA/observations/latest');
   });

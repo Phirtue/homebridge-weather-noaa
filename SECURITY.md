@@ -121,9 +121,32 @@ anything reaches `main`. Release tags are immutable after creation, and
 the publish workflow independently verifies that the tagged commit is on
 `main` before rebuilding, testing, and publishing it.
 
+The release is split across jobs by what each one executes. An
+unprivileged `verify` job runs the linter, the test type-check and the
+unit tests. Only after it passes does a separate `package` job, on a fresh
+runner, compile and pack the tarball; the only code that executes there
+is npm and the TypeScript compiler, which has no dependencies. The
+`publish` job is the only one that can request npm credentials, and it
+publishes the packed bytes without checking out the repository or
+running any build tooling. Provenance proves which workflow built a
+tarball, not that nothing else on the runner touched it, so the
+development toolchain never runs where the published bytes are made.
+
+The `publish` job runs in the `release` GitHub environment, so its OIDC
+token names that environment. Maintainer setup, in this order: once the
+workflow referencing it is on `main`, restrict the `release` environment
+in the repository settings to deployments from `v*` tags (optionally with
+a required reviewer), then set `release` as the environment on the npm
+trusted publisher. Setting it on npm before the workflow references the
+environment would make the next publish fail.
+
 ### Privacy
 
 The plugin sends nothing anywhere except `api.weather.gov`. The
 configured coordinates are the most sensitive value it handles: they are
 coarsened to 2 decimal places (~1 km) before use, stored only in an
-owner-only cache file, and never written to the Homebridge log.
+owner-only cache file, and never written to the Homebridge log. The NWS
+grid cell they resolve to, about 2.5 km across, stays out of the log as
+well, including HTTP error messages. At the default log level the plugin
+names only the selected observation station; the distance-ordered list
+of nearby candidates appears only in debug output.

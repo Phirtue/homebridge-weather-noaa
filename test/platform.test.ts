@@ -151,7 +151,14 @@ describe('coordinate privacy', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
+
+  // Distinctive values, so a leak cannot hide behind an unrelated number.
+  const GRID_POINT_BODY = JSON.stringify({
+    properties: { gridId: 'SEW', gridX: 913, gridY: 457 },
+  });
+  const GRID_CELL = /SEW|913|457/;
 
   it('never writes the coordinates to the log, even on request failure', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
@@ -188,6 +195,74 @@ describe('coordinate privacy', () => {
     for (const m of log.messages) {
       expect(m).not.toMatch(/47\.62|122\.35/);
     }
+  });
+
+  it('keeps the grid cell out of the log during a successful discovery', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
+    const cacheFile = path.join(dir, 'cache.json');
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/points/')) {
+          return new Response(GRID_POINT_BODY, { status: 200 });
+        }
+        if (url.includes('/gridpoints/')) {
+          return new Response(JSON.stringify({
+            features: [
+              { properties: { stationIdentifier: 'KPAE' } },
+              { properties: { stationIdentifier: 'KBFI' } },
+            ],
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          properties: {
+            timestamp: '2026-09-07T15:20:00Z',
+            temperature: { value: 14, unitCode: 'wmoUnit:degC', qualityControl: 'V' },
+          },
+        }), { status: 200 });
+      }));
+      const { platform, log } = makePlatform(VALID);
+
+      const selection = await invoke<Promise<{ stationId: string } | null>>(
+        platform, 'discoverStation', 47.62, -122.35, cacheFile,
+      );
+
+      expect(selection?.stationId).toBe('KPAE');
+      for (const m of log.messages) {
+        expect(m).not.toMatch(GRID_CELL);
+      }
+      expect(log.messages).toContain('[info] Found 2 candidate NOAA stations.');
+      expect(log.messages).toContain('[debug] Station candidates: KPAE, KBFI');
+      // The cache file still records the grid for compatibility.
+      expect(JSON.parse(fs.readFileSync(cacheFile, 'utf8'))).toMatchObject({
+        gridId: 'SEW', gridX: 913, gridY: 457, stationId: 'KPAE',
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the grid cell out of the log when the gridpoints request fails', async () => {
+    // 404 is non-retryable, so the error message naming the gridpoints URL
+    // reaches the log immediately.
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) =>
+      String(input).includes('/points/')
+        ? new Response(GRID_POINT_BODY, { status: 200 })
+        : new Response('', { status: 404, statusText: 'Not Found' }),
+    ));
+    const { platform, log } = makePlatform(VALID);
+
+    const result = await invoke<Promise<unknown>>(
+      platform, 'discoverStation', 47.62, -122.35, '/nonexistent/cache.json',
+    );
+
+    expect(result).toBeNull();
+    for (const m of log.messages) {
+      expect(m).not.toMatch(GRID_CELL);
+    }
+    expect(log.messages.some((m) => m.includes('/gridpoints/<grid>/stations'))).toBe(true);
   });
 });
 
@@ -1112,6 +1187,9 @@ describe('first-run lifecycle', () => {
 
   function makeLifecycleApi(dir: string) {
     const handlers = new Map<string, () => void>();
+    // `handlers` keeps the last listener per event; this keeps all of them,
+    // in registration order, for tests that construct several blocks.
+    const listeners: Array<{ event: string; cb: () => void }> = [];
     const registered: unknown[] = [];
     const unregistered: unknown[] = [];
     const api = {
@@ -1122,6 +1200,7 @@ describe('first-run lifecycle', () => {
       },
       on: (event: string, cb: () => void) => {
         handlers.set(event, cb);
+        listeners.push({ event, cb });
       },
       user: { persistPath: () => dir },
       // `new this.api.platformAccessory(...)`: must be constructible.
@@ -1137,7 +1216,7 @@ describe('first-run lifecycle', () => {
         unregistered.push(...accs);
       }),
     } as unknown as API;
-    return { api, handlers, registered, unregistered };
+    return { api, handlers, listeners, registered, unregistered };
   }
 
   it('creates and registers the accessory, then polls, on a first run with no cache', async () => {
@@ -1239,14 +1318,61 @@ describe('first-run lifecycle', () => {
     expect(log.messages.filter((m) => m.includes('NOAA Platform Metrics')).length).toBe(1);
   });
 
-  it('warns when a second platform block is configured in the same process', () => {
-    const api = makeFakeApi();
-    const first = makeFakeLog();
-    const second = makeFakeLog();
-    new NOAAWeatherPlatform(first as Logging, { platform: 'NOAAWeather', ...VALID } as PlatformConfig, api);
-    new NOAAWeatherPlatform(second as Logging, { platform: 'NOAAWeather', ...VALID } as PlatformConfig, api);
-    expect(first.messages.some((m) => m.includes('Another NOAAWeather platform block'))).toBe(false);
-    expect(second.messages.some((m) => m.includes('Another NOAAWeather platform block'))).toBe(true);
+  it('starts only the most recently constructed block when two are configured', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
+    try {
+      const fetchMock = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/points/')) {
+          return new Response(pointBody, { status: 200 });
+        }
+        if (url.includes('/gridpoints/')) {
+          return new Response(stationsBody, { status: 200 });
+        }
+        return new Response(observationBody, { status: 200 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const { api, listeners, registered } = makeLifecycleApi(dir);
+      const firstLog = makeFakeLog();
+      const secondLog = makeFakeLog();
+      const config = { platform: 'NOAAWeather', ...VALID } as PlatformConfig;
+      new NOAAWeatherPlatform(firstLog as Logging, config, api);
+      new NOAAWeatherPlatform(secondLog as Logging, config, api);
+      const emit = (event: string): void => {
+        for (const listener of listeners.filter((l) => l.event === event)) {
+          listener.cb();
+        }
+      };
+      const metricsLines = (log: FakeLog): number =>
+        log.messages.filter((m) => m.includes('NOAA Platform Metrics')).length;
+      const idleLines = [
+        expect.stringContaining('Another NOAAWeather platform block is configured'),
+      ];
+
+      emit('didFinishLaunching');
+      await vi.waitFor(() => expect(registered).toHaveLength(1));
+
+      // The earlier block explains itself and does nothing else.
+      expect(firstLog.messages.filter((m) => !m.startsWith('[debug]'))).toEqual(idleLines);
+      // The later block runs a normal first launch: points, stations, one probe.
+      expect(secondLog.messages.some((m) => m.includes('Created new NOAA Weather accessory'))).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+
+      // Only the running block has an hourly metrics timer and a shutdown line.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      expect(metricsLines(firstLog)).toBe(0);
+      expect(metricsLines(secondLog)).toBe(1);
+      emit('shutdown');
+      expect(metricsLines(secondLog)).toBe(2);
+      await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1000);
+      expect(metricsLines(secondLog)).toBe(2);
+      expect(firstLog.messages.filter((m) => !m.startsWith('[debug]'))).toEqual(idleLines);
+    } finally {
+      vi.useRealTimers();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
