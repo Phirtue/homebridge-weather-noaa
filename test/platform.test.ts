@@ -151,7 +151,14 @@ describe('coordinate privacy', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
+
+  // Distinctive values, so a leak cannot hide behind an unrelated number.
+  const GRID_POINT_BODY = JSON.stringify({
+    properties: { gridId: 'SEW', gridX: 913, gridY: 457 },
+  });
+  const GRID_CELL = /SEW|913|457/;
 
   it('never writes the coordinates to the log, even on request failure', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
@@ -188,6 +195,74 @@ describe('coordinate privacy', () => {
     for (const m of log.messages) {
       expect(m).not.toMatch(/47\.62|122\.35/);
     }
+  });
+
+  it('keeps the grid cell out of the log during a successful discovery', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-07T15:30:00Z'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'noaa-platform-test-'));
+    const cacheFile = path.join(dir, 'cache.json');
+    try {
+      vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes('/points/')) {
+          return new Response(GRID_POINT_BODY, { status: 200 });
+        }
+        if (url.includes('/gridpoints/')) {
+          return new Response(JSON.stringify({
+            features: [
+              { properties: { stationIdentifier: 'KPAE' } },
+              { properties: { stationIdentifier: 'KBFI' } },
+            ],
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          properties: {
+            timestamp: '2026-09-07T15:20:00Z',
+            temperature: { value: 14, unitCode: 'wmoUnit:degC', qualityControl: 'V' },
+          },
+        }), { status: 200 });
+      }));
+      const { platform, log } = makePlatform(VALID);
+
+      const selection = await invoke<Promise<{ stationId: string } | null>>(
+        platform, 'discoverStation', 47.62, -122.35, cacheFile,
+      );
+
+      expect(selection?.stationId).toBe('KPAE');
+      for (const m of log.messages) {
+        expect(m).not.toMatch(GRID_CELL);
+      }
+      expect(log.messages).toContain('[info] Found 2 candidate NOAA stations.');
+      expect(log.messages).toContain('[debug] Station candidates: KPAE, KBFI');
+      // The cache file still records the grid for compatibility.
+      expect(JSON.parse(fs.readFileSync(cacheFile, 'utf8'))).toMatchObject({
+        gridId: 'SEW', gridX: 913, gridY: 457, stationId: 'KPAE',
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the grid cell out of the log when the gridpoints request fails', async () => {
+    // 404 is non-retryable, so the error message naming the gridpoints URL
+    // reaches the log immediately.
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) =>
+      String(input).includes('/points/')
+        ? new Response(GRID_POINT_BODY, { status: 200 })
+        : new Response('', { status: 404, statusText: 'Not Found' }),
+    ));
+    const { platform, log } = makePlatform(VALID);
+
+    const result = await invoke<Promise<unknown>>(
+      platform, 'discoverStation', 47.62, -122.35, '/nonexistent/cache.json',
+    );
+
+    expect(result).toBeNull();
+    for (const m of log.messages) {
+      expect(m).not.toMatch(GRID_CELL);
+    }
+    expect(log.messages.some((m) => m.includes('/gridpoints/<grid>/stations'))).toBe(true);
   });
 });
 

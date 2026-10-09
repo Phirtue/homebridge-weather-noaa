@@ -27,14 +27,17 @@ const MAX_REDIRECTS = 3;
 const MAX_URL_LOG_CHARS = 200;
 
 /**
- * Strip the coordinates from a /points URL before it reaches a log line.
- * The user's coordinates are the most sensitive value this plugin handles;
- * an error message that embeds them ends up in Homebridge logs that get
- * pasted into GitHub issues. Station and grid paths carry only public NWS
- * identifiers and are left intact. Output is length-capped.
+ * Strip location from a URL before it reaches a log line. The user's
+ * coordinates are the most sensitive value this plugin handles, and the
+ * NWS grid cell they resolve to locates the user to about 2.5 km; an error
+ * message that embeds either ends up in Homebridge logs that get pasted
+ * into GitHub issues. Station paths carry only a public NWS identifier
+ * and are left intact. Output is length-capped.
  */
 export function describeUrl(url: string): string {
-  const described = url.replace(/\/points\/[^/?#]*/, '/points/<coordinates>');
+  const described = url
+    .replace(/\/points\/[^/?#]*/, '/points/<coordinates>')
+    .replace(/\/gridpoints\/[^/?#]+(?:\/[^/?#]*)?/, '/gridpoints/<grid>');
   return described.length > MAX_URL_LOG_CHARS
     ? `${described.slice(0, MAX_URL_LOG_CHARS)}…`
     : described;

@@ -442,8 +442,9 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
     excludeStationId?: string,
   ): Promise<StationSelection | null> {
     try {
-      // The coordinates themselves are deliberately kept out of the log:
-      // Homebridge logs get pasted into public bug reports.
+      // Neither the coordinates nor the grid cell they resolve to is logged:
+      // Homebridge logs get pasted into public bug reports, and the cell
+      // locates the user to about 2.5 km.
       this.log.info('Fetching NOAA grid data for the configured coordinates.');
 
       const point = await this.client.fetchJson<PointResponse>(
@@ -467,8 +468,6 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         return null;
       }
 
-      this.log.info(`Grid location: ${gridId}/${gridX},${gridY}`);
-
       const stations = await this.client.fetchJson<GridpointStationsResponse>(
         `${NWS_API_BASE}/gridpoints/${encodeURIComponent(gridId)}/${gridX},${gridY}/stations`,
       );
@@ -484,7 +483,12 @@ export class NOAAWeatherPlatform implements DynamicPlatformPlugin {
         this.log.error('No valid NOAA stations found for grid cell.');
         return null;
       }
-      this.log.info(`Station candidates: ${candidates.join(', ')}`);
+      // Ordered by distance, the full list narrows the location much as the
+      // grid cell does, so it stays at debug.
+      this.log.info(
+        `Found ${candidates.length} candidate NOAA station${candidates.length === 1 ? '' : 's'}.`,
+      );
+      this.log.debug(`Station candidates: ${candidates.join(', ')}`);
 
       let selection: StationSelection | null = null;
       for (const candidate of candidates) {

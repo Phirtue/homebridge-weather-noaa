@@ -137,4 +137,8 @@ development toolchain never runs where the published bytes are made.
 The plugin sends nothing anywhere except `api.weather.gov`. The
 configured coordinates are the most sensitive value it handles: they are
 coarsened to 2 decimal places (~1 km) before use, stored only in an
-owner-only cache file, and never written to the Homebridge log.
+owner-only cache file, and never written to the Homebridge log. The NWS
+grid cell they resolve to, about 2.5 km across, stays out of the log as
+well, including HTTP error messages. At the default log level the plugin
+names only the selected observation station; the distance-ordered list
+of nearby candidates appears only in debug output.

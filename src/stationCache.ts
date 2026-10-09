@@ -16,7 +16,11 @@ const STATION_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  */
 export const CACHE_MAX_BYTES = 64 * 1024;
 
-/** Station/grid metadata persisted between restarts to skip re-discovery. */
+/**
+ * Station/grid metadata persisted between restarts to skip re-discovery.
+ * The grid fields are kept for compatibility but never logged: the cell
+ * locates the user to about 2.5 km.
+ */
 export interface PointsCache {
   latitude: number;
   longitude: number;
@@ -118,14 +122,7 @@ export function readStationCache(
       return { stationId: null, wasCorrupted: false };
     }
 
-    // Grid fields are informational only, but they still come from a file
-    // on disk: validate before they touch the log.
-    const gridNote =
-      typeof cache.gridId === 'string' && GRID_ID_RE.test(cache.gridId) &&
-      Number.isFinite(cache.gridX) && Number.isFinite(cache.gridY)
-        ? ` (grid ${cache.gridId}/${cache.gridX},${cache.gridY})`
-        : '';
-    log.info(`Using cached NOAA station: ${cache.stationId}${gridNote}`);
+    log.info(`Using cached NOAA station: ${cache.stationId}`);
     return { stationId: cache.stationId, wasCorrupted: false };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {

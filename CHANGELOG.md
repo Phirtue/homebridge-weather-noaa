@@ -22,6 +22,19 @@
   reachable from this plugin's runtime, which ships zero dependencies. Both
   fixed versions were past the 7-day cooldown when adopted.
 
+### Privacy
+
+- **The NWS grid cell no longer appears in the log.** Coordinates were
+  already kept out, but the discovery line `Grid location: …`, the
+  cached-station line written on every boot, and HTTP error messages for
+  `/gridpoints/…` URLs still named the 2.5 km grid cell, which the public
+  NWS API maps straight back to an outline on the map. Those lines no
+  longer carry it, and error messages show `/gridpoints/<grid>`. The
+  distance-ordered list of candidate stations narrows the location in a
+  similar way, so it moved to debug level; info level now reports how many
+  candidates were found and which one was selected. The cache file still
+  records the grid for compatibility.
+
 ## [1.11.1] - 2026-09-13
 
 A code-review release: no new features. Documentation, pipeline and

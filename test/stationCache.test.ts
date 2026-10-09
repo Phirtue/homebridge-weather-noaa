@@ -100,12 +100,18 @@ describe('station cache', () => {
     expect(result).toEqual({ stationId: null, wasCorrupted: true });
   });
 
-  it('omits the grid note when the cached gridId fails validation', () => {
-    writeJsonAtomic(log, file, validCache({ gridId: 'SEW\nFAKE LOG LINE' }));
-    expect(readStationCache(log, file, LAT, LON).stationId).toBe('KSEA');
-    // The fake log is shared across this describe; inspect the newest line.
-    const line = log.messages.filter((m) => m.includes('Using cached NOAA station')).at(-1);
-    expect(line).toBe('[info] Using cached NOAA station: KSEA');
+  it('never logs the cached grid cell, valid or not', () => {
+    // The fake log is shared across this describe; inspect only new lines.
+    const before = log.messages.length;
+    for (const gridId of ['SEW', 'SEW\nFAKE LOG LINE']) {
+      writeJsonAtomic(log, file, validCache({ gridId, gridX: 913, gridY: 457 }));
+      expect(readStationCache(log, file, LAT, LON).stationId).toBe('KSEA');
+    }
+    const lines = log.messages.slice(before);
+    expect(lines).toEqual([
+      '[info] Using cached NOAA station: KSEA',
+      '[info] Using cached NOAA station: KSEA',
+    ]);
   });
 
   it('returns null when no cache file exists', () => {

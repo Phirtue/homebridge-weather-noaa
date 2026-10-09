@@ -145,8 +145,9 @@ services (they share a room and tile group, but each shows its own value):
 - Coordinates are rounded to 2 decimal places (roughly 1 km) before
   they are used. NWS resolves them to a 2.5 km grid cell, so this
   selects the same station in practice while keeping your exact
-  address out of requests, cache files and logs. If you need a
-  particular station, set `stationId`.
+  address out of requests, cache files and logs. The grid cell itself
+  is kept out of the logs too. If you need a particular station, set
+  `stationId`.
 - Per the [NWS documentation](https://www.weather.gov/documentation/services-web-api),
   observations can lag up to 20 minutes due to quality-control
   processing, so refresh intervals shorter than 15 minutes provide
@@ -189,7 +190,8 @@ plugin. Every release can be verified independently:
   list is asserted against a checked-in manifest before every publish.
 - **Privacy by default.** No telemetry, no third-party services. The
   only outbound connection is to `api.weather.gov`, coordinates are
-  coarsened to ~1 km before use, and they are never written to the log.
+  coarsened to ~1 km before use, and neither they nor the NWS grid cell
+  they resolve to is ever written to the log.
 
 **Verify it yourself:** [VERIFYING.md](./VERIFYING.md) has the exact
 `npm audit signatures`, `slsa-verifier`, and `cosign verify-blob`
