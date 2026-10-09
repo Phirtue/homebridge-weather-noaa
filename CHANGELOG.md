@@ -14,6 +14,13 @@
   separate `verify` job. A fresh `package` job runs only after `verify`
   passes, compiles with `tsc` directly (skipping `rimraf` and its
   dependency chain) and packs the tarball.
+- **Dev dependency update:** `brace-expansion` 5.0.9 → 5.0.12
+  (GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p; reached
+  through ESLint's `minimatch`) and `source-map-js` 1.2.1 → 1.2.2
+  (GHSA-68fv-2mgg-jv7q; reached through Vitest's `vite` and `postcss`).
+  Both are CPU or stack-exhaustion bugs in development tooling, never
+  reachable from this plugin's runtime, which ships zero dependencies. Both
+  fixed versions were past the 7-day cooldown when adopted.
 
 ## [1.11.1] - 2026-09-13
 
