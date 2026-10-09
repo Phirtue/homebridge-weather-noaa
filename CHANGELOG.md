@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- **The release tarball is now built where only npm and TypeScript run.**
+  The publish workflow's unprivileged build job ran ESLint, Vitest and
+  their dependency trees on the same runner that compiled, packed and
+  hashed the tarball, after `dist/` existed and before `npm pack`. That job
+  could not request npm credentials, but a compromised development
+  dependency could have altered the published bytes, and npm and SLSA
+  provenance would still have verified them. Lint and tests now run in a
+  separate `verify` job. A fresh `package` job runs only after `verify`
+  passes, compiles with `tsc` directly (skipping `rimraf` and its
+  dependency chain) and packs the tarball.
+
 ## [1.11.1] - 2026-09-13
 
 A code-review release: no new features. Documentation, pipeline and

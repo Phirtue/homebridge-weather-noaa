@@ -121,6 +121,17 @@ anything reaches `main`. Release tags are immutable after creation, and
 the publish workflow independently verifies that the tagged commit is on
 `main` before rebuilding, testing, and publishing it.
 
+The release is split across jobs by what each one executes. An
+unprivileged `verify` job runs the linter, the test type-check and the
+unit tests. Only after it passes does a separate `package` job, on a fresh
+runner, compile and pack the tarball; the only code that executes there
+is npm and the TypeScript compiler, which has no dependencies. The
+`publish` job is the only one that can request npm credentials, and it
+publishes the packed bytes without checking out the repository or
+running any build tooling. Provenance proves which workflow built a
+tarball, not that nothing else on the runner touched it, so the
+development toolchain never runs where the published bytes are made.
+
 ### Privacy
 
 The plugin sends nothing anywhere except `api.weather.gov`. The

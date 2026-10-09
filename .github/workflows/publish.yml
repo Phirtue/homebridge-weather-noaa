@@ -21,20 +21,90 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Build and inspect the release without OIDC or write permissions. The
-  # compiler, linter, tests, and their transitive dependencies execute here,
-  # where none of them can request npm publishing credentials.
-  build:
+  # Two unprivileged jobs build the release; neither can request npm
+  # publishing credentials. `verify` runs the linter, the test runner and
+  # every transitive dependency they load. `package` starts on a fresh
+  # runner and executes only npm and the TypeScript compiler, which has no
+  # dependencies, to produce the tarball. Provenance records which workflow
+  # built a tarball, not whether something else on the runner modified it,
+  # so development tooling must never share a runner with the bytes that
+  # ship: in `verify` it can fail a release but cannot alter one.
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # This job executes third-party development tools, so block unexpected
+      # egress even though its token is read-only and it has no OIDC access.
+      # tuf-repo-cdn.sigstore.dev serves the Sigstore trust root that
+      # `npm audit signatures` uses to verify provenance attestations.
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            nodejs.org:443
+            objects.githubusercontent.com:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+            tuf-repo-cdn.sigstore.dev:443
+
+      # Actions pinned to commit SHAs so a compromised tag cannot inject code.
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No step pushes; do not leave the read-only token on disk.
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Reject lockfile entries that resolve anywhere other than the npm
+      # registry over HTTPS before any dependency code executes. This
+      # verifier is repository-owned and uses Node built-ins only.
+      - name: Lint lockfile
+        run: node scripts/verify-lockfile.mjs
+
+      # --ignore-scripts keeps dev-dependency lifecycle scripts from running;
+      # lint and tests are invoked explicitly below.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # Registry signatures and provenance attestations for everything that
+      # participates in the build. Complements the lockfile verifier above:
+      # integrity proves "the locked bytes", signatures prove "the registry
+      # served them".
+      - name: Verify registry signatures and provenance
+        run: npm audit signatures
+
+      # Nothing is packaged unless these pass for this commit: `package`
+      # needs this job. The test type-check and the suite read src/, so
+      # this job never builds dist/.
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check tests
+        run: npm run typecheck:test
+
+      - name: Unit tests
+        run: npm test
+
+  # Produces the release inputs. Every dependency is installed, but the
+  # only one that executes here is the TypeScript compiler.
+  package:
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
       tarball_sha256: ${{ steps.artifact_hashes.outputs.tarball_sha256 }}
       sbom_sha256: ${{ steps.artifact_hashes.outputs.sbom_sha256 }}
     steps:
-      # This job executes third-party development tools, so block unexpected
-      # egress even though its token is read-only and it has no OIDC access.
-      # tuf-repo-cdn.sigstore.dev serves the Sigstore trust root that
-      # `npm audit signatures` uses to verify provenance attestations.
+      # Same endpoints as verify: setup-node, the npm registry, and the
+      # Sigstore trust root for `npm audit signatures`.
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
@@ -77,37 +147,21 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      # Reject lockfile entries that resolve anywhere other than the npm
-      # registry over HTTPS before any dependency code executes. This
-      # verifier is repository-owned and uses Node built-ins only.
+      # Before any dependency code executes, as in verify.
       - name: Lint lockfile
         run: node scripts/verify-lockfile.mjs
 
-      # --ignore-scripts keeps dev-dependency lifecycle scripts from running;
-      # lint and build are invoked explicitly below.
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      # Registry signatures and provenance attestations for everything that
-      # participates in the build. Complements the lockfile verifier above:
-      # integrity proves "the locked bytes", signatures prove "the registry
-      # served them".
       - name: Verify registry signatures and provenance
         run: npm audit signatures
 
-      - name: Lint
-        run: npm run lint
-
+      # tsc directly, not `npm run build`: that script's rimraf would put
+      # glob, minimatch and brace-expansion on the artifact path, and a fresh
+      # checkout has no dist/ to remove.
       - name: Build
-        run: npm run build
-
-      - name: Type-check tests
-        run: npm run typecheck:test
-
-      # Last gate before publish: nothing ships without the unit suite
-      # passing in the same environment that built the tarball.
-      - name: Unit tests
-        run: npm test
+        run: npx --no-install tsc
 
       # The tarball must contain exactly the files in the checked-in
       # manifest; refuse to publish anything with drifted contents.
@@ -138,7 +192,7 @@ jobs:
       - name: Generate SBOM (CycloneDX)
         run: npm sbom --sbom-format cyclonedx --omit dev > sbom.cdx.json
 
-      # Pack once in the unprivileged job. The privileged job publishes
+      # Pack once, in this unprivileged job. The privileged job publishes
       # these exact bytes instead of rebuilding or executing the toolchain.
       - name: Pack release tarball
         run: npm pack --ignore-scripts
@@ -168,7 +222,7 @@ jobs:
   # Only this small job can mint the npm/Sigstore OIDC token. It does not
   # check out the repository, install dependencies, or execute build tools.
   publish:
-    needs: build
+    needs: package
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -209,7 +263,7 @@ jobs:
           package-manager-cache: false
 
       # Derive publish metadata from the GitHub release event, not from the
-      # unprivileged build job or transferred tarball.
+      # unprivileged package job or transferred tarball.
       - name: Derive trusted release metadata
         id: release
         env:
@@ -237,8 +291,8 @@ jobs:
         env:
           PKG: ${{ steps.release.outputs.name }}
           VERSION: ${{ steps.release.outputs.version }}
-          EXPECTED_TARBALL_SHA256: ${{ needs.build.outputs.tarball_sha256 }}
-          EXPECTED_SBOM_SHA256: ${{ needs.build.outputs.sbom_sha256 }}
+          EXPECTED_TARBALL_SHA256: ${{ needs.package.outputs.tarball_sha256 }}
+          EXPECTED_SBOM_SHA256: ${{ needs.package.outputs.sbom_sha256 }}
         run: |
           set -euo pipefail
           test -f "$PKG-$VERSION.tgz"
