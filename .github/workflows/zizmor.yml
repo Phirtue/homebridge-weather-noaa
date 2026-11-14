@@ -31,7 +31,7 @@ jobs:
       # container image (ghcr.io + its backing storage), online audits
       # and SARIF upload (api.github.com).
       - name: Harden runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -53,7 +53,7 @@ jobs:
       # container image recorded inside the action at the pinned SHA, so
       # the analyzer itself cannot be swapped out from under the check.
       - name: Run zizmor
-        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
           # 1.27.0 was yanked for GHSA-f42p-wjw5-97qh (credential
           # disclosure under debug logging). 1.29.0 is digest-pinned in
